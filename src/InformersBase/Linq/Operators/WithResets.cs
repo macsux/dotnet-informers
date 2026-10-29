@@ -72,7 +72,7 @@ public static partial class Informable
 
                 }
             }
-            return AsyncEnumerable.Create(x => SourceEnumerator(x));
+            return CreateAsyncEnumerable(SourceEnumerator);
         }
 
         internal class ResetExtractor<TKey, TResource>
@@ -114,7 +114,7 @@ public static partial class Informable
 
             public async Task<List<ResourceEvent<TKey, TResource>>> Extract(IAsyncEnumerator<ResourceEvent<TKey, TResource>> source, CancellationToken cancellationToken = default)
             {
-                while (await source.MoveNextAsync(cancellationToken))
+                while (!cancellationToken.IsCancellationRequested && await source.MoveNextAsync())
                 {
                     if (ApplyEvent(source.Current, out var resetBuffer))
                         return resetBuffer;

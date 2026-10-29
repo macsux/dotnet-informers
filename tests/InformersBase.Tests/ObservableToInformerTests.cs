@@ -2,7 +2,7 @@ using System.Linq;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using Steeltoe.Informers.InformersBase.Tests.Utils;
 using Xunit;
 
@@ -300,7 +300,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
             var enumerator = sut.GetAsyncEnumerator();
             subject.OnCompleted();
             
-            sut.Take(2).ToEventList().Result.Should().BeEquivalentTo(events[1],events[2]);
+            sut.Take(2).ToEventList().Result.Should().BeEquivalentTo(new[] { events[1],events[2] });
         }
     }
 }

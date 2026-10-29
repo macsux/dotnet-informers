@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
@@ -10,7 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using k8s;
 using k8s.Models;
-using Microsoft.Rest;
+using k8s.Autorest;
 using Steeltoe.Informers.InformersBase;
 using Steeltoe.Informers.InformersBase.Cache;
 
@@ -48,19 +49,36 @@ namespace Steeltoe.Informers.KubernetesBase
             return obj;
         }
 
+        /// <summary>
+        ///     Reads a watch response (newline delimited JSON watch events) as an observable stream of events.
+        ///     A watch event of type <see cref="WatchEventType.Error" /> is surfaced as <see cref="KubernetesException" /> carrying the server <see cref="V1Status" />
+        /// </summary>
         public static IObservable<Watcher<T>.WatchEvent> Watch<T>(this Task<HttpOperationResponse<KubernetesList<T>>> responseTask) where T : IKubernetesObject
         {
-            return Observable.Create<k8s.Watcher<T>.WatchEvent>(observer =>
+            return Observable.Create<Watcher<T>.WatchEvent>(async (observer, cancellationToken) =>
             {
-                void OnNext(WatchEventType type, T item) => observer.OnNext(new k8s.Watcher<T>.WatchEvent {Type = type, Object = item});
-                var watcher = responseTask.Watch<T, KubernetesList<T>>(OnNext, observer.OnError, observer.OnCompleted);
-                var eventSubscription = Disposable.Create(() =>
+                using var response = await responseTask.ConfigureAwait(false);
+                await using var stream = await response.Response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                using var reader = new StreamReader(stream);
+                string line;
+                while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) != null)
                 {
-                    watcher.OnEvent -= OnNext;
-                    watcher.OnError -= observer.OnError;
-                    watcher.OnClosed -= observer.OnCompleted;
-                });
-                return new CompositeDisposable(watcher, eventSubscription);
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+
+                    var watchEvent = KubernetesJson.Deserialize<Watcher<T>.WatchEvent>(line);
+                    if (watchEvent.Type == WatchEventType.Error)
+                    {
+                        var status = KubernetesJson.Deserialize<Watcher<V1Status>.WatchEvent>(line).Object;
+                        throw new KubernetesException(status);
+                    }
+
+                    observer.OnNext(watchEvent);
+                }
+
+                observer.OnCompleted();
             });
         }
 

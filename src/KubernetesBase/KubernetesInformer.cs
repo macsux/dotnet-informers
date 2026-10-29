@@ -10,7 +10,6 @@ using k8s;
 using k8s.Models;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Rest.TransientFaultHandling;
 using Steeltoe.Informers.InformersBase;
 using Steeltoe.Informers.InformersBase.FaultTolerance;
 using RetryPolicy = Steeltoe.Informers.InformersBase.FaultTolerance.RetryPolicy;
@@ -84,10 +83,7 @@ namespace Steeltoe.Informers.KubernetesBase
                         resourceVersion: _resourceVersion,
                         labelSelector: _options.LabelSelector,
                         cancellationToken: cancellationToken).ConfigureAwait(false);
-                    if (!httpResponse.Response.IsSuccessStatusCode)
-                    {
-                        throw new HttpRequestWithStatusException("Web server replied with error code") {StatusCode = httpResponse.Response.StatusCode};
-                    }
+                    httpResponse.EnsureSuccessStatusCode();
 
                     return httpResponse;
                 });
@@ -140,10 +136,7 @@ namespace Steeltoe.Informers.KubernetesBase
                             labelSelector: _options.LabelSelector,
                             cancellationToken: cancellationToken
                         ).ConfigureAwait(false);
-                        if (!result.Response.IsSuccessStatusCode)
-                        {
-                            throw new HttpRequestWithStatusException("Web server replied with error code") { StatusCode = result.Response.StatusCode };
-                        }
+                        result.EnsureSuccessStatusCode();
                         return Task.FromResult(result)
                             .Watch()
                             .SelectMany(x => // this is not a one to one mapping as some events cause side effects but don't propagate, so we need SelectMany
@@ -185,7 +178,7 @@ namespace Steeltoe.Informers.KubernetesBase
                         _parent._logger.LogError(exception.Message, exception);
                         // handle case when we tried rewatching by specifying resource version to resume after disconnect,
                         // but resource is too stale - should try to resubscribe from scratch
-                        if (exception is HttpRequestWithStatusException httpException && httpException.StatusCode == HttpStatusCode.Gone && _resourceVersion != null)
+                        if (exception.IsResourceVersionGone() && _resourceVersion != null)
                         {
                             // we tried resuming but failed, restart from scratch
                             _resourceVersion = null;

@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Subjects;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using Steeltoe.Informers.InformersBase.Cache;
 using Steeltoe.Informers.InformersBase.Tests.Utils;
 using Xunit;
@@ -35,7 +35,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
                 }, x => x.Key)
                 .Cast<string, TestResource, object>()
                 .ToList();
-            sut.Should().BeEquivalentTo(new TestResource("1", value: "hello"));
+            sut.Should().BeEquivalentTo(new[] { new TestResource("1", value: "hello") });
         }
         [Fact]
         public async Task Do_Action()
@@ -94,7 +94,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
                     items.Add(x.Value);
                 })
                 .ToList();
-            items.Should().BeEquivalentTo(1, 2);
+            items.Should().BeEquivalentTo(new[] { 1, 2 });
         }
 
         [Fact]
@@ -111,16 +111,16 @@ namespace Steeltoe.Informers.InformersBase.Tests
             cache.Values.ToList().Should().BeEquivalentTo(source);
             subject.OnNext(1.ToResourceEvent(EventTypeFlags.Delete));
             await Task.Delay(100);
-            cache.Values.ToList().Should().BeEquivalentTo(2,3);
+            cache.Values.ToList().Should().BeEquivalentTo(new[] { 2,3 });
             
             subject.OnNext(4.ToResourceEvent(EventTypeFlags.Add));
             await Task.Delay(100);
-            cache.Values.ToList().Should().BeEquivalentTo(2,3,4);
+            cache.Values.ToList().Should().BeEquivalentTo(new[] { 2,3,4 });
             
             subject.OnNext(1.ToResourceEvent(EventTypeFlags.Modify,2));
             await Task.Delay(100);
-            cache.Values.ToList().Should().BeEquivalentTo(1,3,4);
-            cache.Keys.ToList().Should().BeEquivalentTo(2,3,4);
+            cache.Values.ToList().Should().BeEquivalentTo(new[] { 1,3,4 });
+            cache.Keys.ToList().Should().BeEquivalentTo(new[] { 2,3,4 });
         }
 
         [Fact]

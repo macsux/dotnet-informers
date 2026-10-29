@@ -5,13 +5,11 @@ using System.Net.Http;
 using System.Reactive.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using k8s;
 using k8s.Models;
 using Microsoft.Extensions.Logging;
-using Microsoft.Rest;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
+using k8s.Autorest;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 using Steeltoe.Informers.InformersBase;
@@ -23,7 +21,6 @@ using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Steeltoe.Informers.KubernetesBase.Tests
 {
@@ -36,11 +33,9 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
         public KubernetesResourceInformerTests(ITestOutputHelper testOutput)
         {
             _testOutput = testOutput;
-            JsonConvert.DefaultSettings = () => new JsonSerializerSettings() { Converters = new[] { new StringEnumConverter() }, Formatting = Formatting.None };
             _server = WireMockServer.Start();
             var kubernetes = new k8s.Kubernetes(new KubernetesClientConfiguration {Host = _server.Urls.First()});
-            kubernetes.HttpClient.BaseAddress = new Uri(_server.Urls.First());
-            _client = new KubernetesGenericClient(kubernetes.HttpClient, kubernetes.SerializationSettings, kubernetes.DeserializationSettings);
+            _client = new KubernetesGenericClient(kubernetes);
             
         }
 
@@ -48,7 +43,7 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
         public async Task List()
         {
             _server.Given(Request.Create().WithParam("watch", MatchBehaviour.RejectOnMatch, "true").UsingGet())
-                .RespondWith(Response.Create().WithBodyAsJson(KubernetesTestData.ListPodsTwoItems));
+                .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody((KubernetesTestData.ListPodsTwoItems).ToKubernetesJson()));
             var sut = new KubernetesInformer<V1Pod>(_client);
 
             var result = await sut.List().ToListAsync();
@@ -63,9 +58,9 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
         {
 
             _server.Given(Request.Create().UsingGet()).AtPriority(100)
-                .RespondWith(Response.Create().WithBodyAsJson(KubernetesTestData.ListPodsTwoItems));
+                .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody((KubernetesTestData.ListPodsTwoItems).ToKubernetesJson()));
             _server.Given(Request.Create().WithParam("watch", MatchBehaviour.AcceptOnMatch, "true").UsingGet())
-                .RespondWith(Response.Create().WithBodyAsJson(KubernetesTestData.TestPod1ResourceVersion2.ToWatchEvent(WatchEventType.Modified)));
+                .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody((KubernetesTestData.TestPod1ResourceVersion2.ToWatchEvent(WatchEventType.Modified)).ToKubernetesJson()));
 
             var sut = new KubernetesInformer<V1Pod>(_client, new RetryPolicy((e, i) => false, i => TimeSpan.Zero), () => false);
 
@@ -86,7 +81,7 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
             kubernetes.ListWithHttpMessagesAsync<V1Pod>().ThrowsForAnyArgs(info => new HttpRequestException());
             var sut = new KubernetesInformer<V1Pod>(kubernetes, new RetryPolicy((e, i) => i < 2, i => TimeSpan.Zero), () => false);
             Func<Task> act = async () => await sut.ListWatch().ToList().TimeoutIfNotDebugging();
-            act.Should().Throw<HttpRequestException>();
+            await act.Should().ThrowAsync<HttpRequestException>();
             await kubernetes.ReceivedWithAnyArgs(2).ListWithHttpMessagesAsync<V1Pod>();
             await kubernetes.Received().ListWithHttpMessagesAsync<V1Pod>(cancellationToken: Arg.Any<CancellationToken>());
         }

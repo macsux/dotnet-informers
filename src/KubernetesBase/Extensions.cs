@@ -2,7 +2,7 @@ using System;
 using System.Net;
 using System.Net.Http;
 using k8s;
-using Microsoft.Rest.TransientFaultHandling;
+using k8s.Autorest;
 
 namespace Steeltoe.Informers.KubernetesBase
 {
@@ -15,9 +15,9 @@ namespace Steeltoe.Informers.KubernetesBase
         /// <returns>Return <see langword="true"/> if exception is transient, or <see langword="false"/> if it's not.</returns>
         public static bool IsTransient(this Exception exception)
         {
-            if (exception is HttpRequestWithStatusException statusException)
+            if (exception is HttpOperationException { Response: not null } statusException)
             {
-                return statusException.StatusCode >= HttpStatusCode.ServiceUnavailable || statusException.StatusCode == HttpStatusCode.RequestTimeout;
+                return statusException.Response.StatusCode >= HttpStatusCode.ServiceUnavailable || statusException.Response.StatusCode == HttpStatusCode.RequestTimeout;
             }
 
             if (exception is HttpRequestException || exception is KubernetesException)
@@ -27,6 +27,28 @@ namespace Steeltoe.Informers.KubernetesBase
 
             return false;
         }
+        /// <summary>
+        ///     Checks if the exception indicates that the requested resource version is too old and the list needs to be fetched from scratch
+        /// </summary>
+        internal static bool IsResourceVersionGone(this Exception exception) => exception switch
+        {
+            HttpOperationException { Response.StatusCode: HttpStatusCode.Gone } => true,
+            KubernetesException { Status.Code: (int)HttpStatusCode.Gone } => true,
+            _ => false,
+        };
+
+        internal static void EnsureSuccessStatusCode(this HttpOperationResponse response)
+        {
+            if (!response.Response.IsSuccessStatusCode)
+            {
+                throw new HttpOperationException($"Web server replied with error code {response.Response.StatusCode}")
+                {
+                    Request = response.Request != null ? new HttpRequestMessageWrapper(response.Request, null) : null,
+                    Response = new HttpResponseMessageWrapper(response.Response, null),
+                };
+            }
+        }
+
         internal static string ToCamelCase(this string value)
         {
             // If there are 0 or 1 characters, just return the string.

@@ -64,7 +64,7 @@ namespace System.Linq
                     yield return item;
                 }
             }
-            return AsyncEnumerable.Create(x => SourceEnumerator(x)).AsInformable();
+            return Create<TKey, TResource>(SourceEnumerator);
         }
     }
     

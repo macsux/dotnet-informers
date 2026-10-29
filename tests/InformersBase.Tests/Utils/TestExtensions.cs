@@ -10,8 +10,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Reactive.Testing;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Steeltoe.Informers.InformersBase.Tests.Utils
 {
@@ -68,9 +68,11 @@ namespace Steeltoe.Informers.InformersBase.Tests.Utils
             throw new TimeoutException("The operation has timed out.");
         }
 
-        public static string ToJson(this object obj, Formatting formatting = Formatting.None)
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions { Converters = { new JsonStringEnumConverter() } };
+
+        public static string ToJson(this object obj)
         {
-            return JsonConvert.SerializeObject(obj, formatting, new StringEnumConverter());
+            return JsonSerializer.Serialize(obj, JsonOptions);
         }
 
        

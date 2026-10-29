@@ -4,7 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using k8s;
 using k8s.Models;
-using Microsoft.Rest;
+using k8s.Autorest;
 
 namespace Steeltoe.Informers.KubernetesBase
 {

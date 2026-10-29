@@ -30,6 +30,22 @@ namespace System.Linq
             }
         }
         
+        private static IAsyncEnumerable<T> CreateAsyncEnumerable<T>(Func<CancellationToken, IAsyncEnumerator<T>> getAsyncEnumerator) =>
+            new AnonymousAsyncEnumerable<T>(getAsyncEnumerator);
+
+        private sealed class AnonymousAsyncEnumerable<T> : IAsyncEnumerable<T>
+        {
+            private readonly Func<CancellationToken, IAsyncEnumerator<T>> _getEnumerator;
+
+            public AnonymousAsyncEnumerable(Func<CancellationToken, IAsyncEnumerator<T>> getEnumerator) => _getEnumerator = getEnumerator;
+
+            public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return _getEnumerator(cancellationToken);
+            }
+        }
+
         private static TResult SafeSelector<TSource, TResult>(TSource source, Func<TSource, TResult> selector)
         {
             return source == null ? default : selector(source);

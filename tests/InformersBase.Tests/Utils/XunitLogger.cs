@@ -1,7 +1,7 @@
 using System;
+using Xunit;
 using System.Threading;
 using Microsoft.Extensions.Logging;
-using Xunit.Abstractions;
 
 namespace Steeltoe.Informers.InformersBase.Tests.Utils
 {

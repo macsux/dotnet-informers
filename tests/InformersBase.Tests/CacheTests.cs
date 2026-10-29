@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
-using FluentAssertions;
+using AwesomeAssertions;
 using Steeltoe.Informers.InformersBase.Cache;
 using Xunit;
 
@@ -20,9 +20,9 @@ namespace Steeltoe.Informers.InformersBase.Tests
             var b = new TestEntity { Key = "2", Namespace = "c", Labels = {{ "app","b"}, {"blah", "test" }}};
             sut[a.Key] = a;
             sut[b.Key] = b;
-            sut.ByIndex("namespace", "a").Should().BeEquivalentTo(a);
-            sut.ByIndex("label", "app").Should().BeEquivalentTo(a,b);
-            sut.ByIndex("labelValue", "app:b").Should().BeEquivalentTo(b);
+            sut.ByIndex("namespace", "a").Should().BeEquivalentTo(new[] { a });
+            sut.ByIndex("label", "app").Should().BeEquivalentTo(new[] { a,b });
+            sut.ByIndex("labelValue", "app:b").Should().BeEquivalentTo(new[] { b });
         }
 
         private class TestEntity

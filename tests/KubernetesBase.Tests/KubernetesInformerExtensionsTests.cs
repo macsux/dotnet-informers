@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using k8s.Models;
 using Microsoft.Reactive.Testing;
 using Steeltoe.Informers.InformersBase;

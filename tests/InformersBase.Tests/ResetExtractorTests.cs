@@ -2,13 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Steeltoe.Informers.InformersBase.Cache;
 using Steeltoe.Informers.InformersBase.Tests.Utils;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace Steeltoe.Informers.InformersBase.Tests
 {
@@ -22,7 +21,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
             
             var result = sut.ApplyEvent(ResourceEvent<int, int>.EmptyReset, out var reset);
             result.Should().BeTrue();
-            reset.Should().BeEquivalentTo(ResourceEvent<int, int>.EmptyReset);
+            reset.Should().BeEquivalentTo(new[] { ResourceEvent<int, int>.EmptyReset });
             sut.IsResetting.Should().BeFalse();
         }
 
@@ -33,7 +32,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
             var item = ResourceEvent.Create(EventTypeFlags.ResetStart | EventTypeFlags.ResetEnd, 1, 1);
             var result = sut.ApplyEvent(item, out var reset);
             result.Should().BeTrue();
-            reset.Should().BeEquivalentTo(item);
+            reset.Should().BeEquivalentTo(new[] { item });
             sut.IsResetting.Should().BeFalse();
         }
         [Fact]
@@ -42,7 +41,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
             var sut = new Informable.ResetExtractor<int,int>();
             var enumerator = Informable.Create(new[]{1,2}, x => x, new[]{3.ToResourceEvent(EventTypeFlags.Add)}).GetAsyncEnumerator();
             var reset = await sut.Extract(enumerator);
-            reset.Should().BeEquivalentTo(1.ToResourceEvent(EventTypeFlags.ResetStart), 2.ToResourceEvent(EventTypeFlags.ResetEnd));
+            reset.Should().BeEquivalentTo(new[] { 1.ToResourceEvent(EventTypeFlags.ResetStart), 2.ToResourceEvent(EventTypeFlags.ResetEnd) });
             await enumerator.MoveNextAsync().TimeoutIfNotDebugging();
             enumerator.Current.Should().Be(3.ToResourceEvent(EventTypeFlags.Add));
         }
@@ -95,7 +94,7 @@ namespace Steeltoe.Informers.InformersBase.Tests
             
             result = sut.ApplyEvent(items[1], out reset);
             result.Should().BeTrue();
-            reset.Should().BeEquivalentTo(items[0]);
+            reset.Should().BeEquivalentTo(new[] { items[0] });
             sut.IsResetting.Should().BeFalse();
         }
     }
