@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using AwesomeAssertions;
 using Xunit;
 using static Steeltoe.Informers.InformersBase.Tests.Core.CoreTestHelpers;
 
@@ -225,6 +227,35 @@ namespace Steeltoe.Informers.InformersBase.Tests.Core
             cache.Replace(new[] { item });
             item.Value = 11; // a consumer modified a shared object
             Assert.Throws<InvalidOperationException>(() => cache.Upsert(new MutableItem { Key = 1, Value = 12 }));
+        }
+
+        [Fact]
+        public void AddIndex_IndexesExistingItems_AndFollowsChanges_UntilDisposed()
+        {
+            var cache = NewCache();
+            cache.Replace(new[] { I(1, 10), I(2, 20), I(3, 10) });
+            var index = cache.AddIndex(x => new[] { x.Value }); // multi-valued selectors return several keys
+            index.Lookup(10).Select(x => x.Key).Should().BeEquivalentTo(new[] { 1, 3 });
+            cache.Upsert(I(3, 20));
+            cache.Delete(1);
+            index.Lookup(10).Should().BeEmpty();
+            index.Lookup(20).Select(x => x.Key).Should().BeEquivalentTo(new[] { 2, 3 });
+            cache.Replace(new[] { I(4, 10) }); // relist
+            index.Lookup(10).Select(x => x.Key).Should().BeEquivalentTo(new[] { 4 });
+            index.Lookup(20).Should().BeEmpty();
+            index.Dispose();
+            cache.Upsert(I(5, 10));
+            index.Lookup(10).Select(x => x.Key).Should().BeEquivalentTo(new[] { 4 }, "a removed index no longer follows changes");
+        }
+
+        [Fact]
+        public void RegisteredIndexes_AreBuiltFromTheFirstList()
+        {
+            var options = Options();
+            options.Indexes["parity"] = x => new[] { x.Key % 2 == 0 ? "even" : "odd" };
+            var cache = new SharedCache<int, Item>(options);
+            cache.Replace(new[] { I(1, 10), I(2, 20), I(3, 30) });
+            cache.GetNamedIndex("parity").Lookup("odd").Select(x => x.Key).Should().BeEquivalentTo(new[] { 1, 3 });
         }
 
         public sealed class MutableItem

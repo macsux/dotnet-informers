@@ -5,5 +5,6 @@
     </ItemGroup>
     <ItemGroup>
       <ProjectReference Include="..\..\src\KubernetesCore\Steeltoe.Informers.KubernetesCore.csproj" />
+      <ProjectReference Include="..\Controllers\Steeltoe.Informers.Samples.Controllers.csproj" />
     </ItemGroup>
 </Project>

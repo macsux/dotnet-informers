@@ -23,14 +23,14 @@ namespace Steeltoe.Informers.KubernetesBase
     ///     </list>
     ///     Compared values must be constants or captured variables. Anything else stays client-side.
     /// </summary>
-    public sealed class KubernetesFilterTranslator<T> : IFilterTranslator<T> where T : IKubernetesObject<V1ObjectMeta>
+    internal sealed class KubernetesFilterTranslator<T> : IFilterTranslator<T> where T : IKubernetesObject<V1ObjectMeta>
     {
         public bool TryTranslate(Expression term, ParameterExpression parameter, ServerFilter current, out ServerFilter result) =>
             KubernetesFilterTranslator.TryTranslate(typeof(T), term, parameter, current, out result);
     }
 
     /// <summary>Term kinds of the Kubernetes server filter and the translation logic.</summary>
-    public static class KubernetesFilterTranslator
+    internal static class KubernetesFilterTranslator
     {
         public const string Namespace = "namespace";
         public const string Label = "label";

@@ -41,13 +41,21 @@ namespace System.Linq
         public void Enqueue(ResourceEvent<TKey, TValue> e, bool fromReset = false)
         {
             var exists = !e.EventFlags.HasFlag(EventTypeFlags.Delete);
-            _pending.TryGetValue(e.Key, out var pending);
+            var hadPending = _pending.TryGetValue(e.Key, out var pending);
+            // a Sync from upstream stays a Sync unless a real change is pending (then that change covers it)
+            var syncOnly = e.EventFlags.HasFlag(EventTypeFlags.Sync) && exists && (!hadPending || pending.SyncOnly);
+            if (e.EventFlags.HasFlag(EventTypeFlags.Sync) && hadPending && !pending.SyncOnly)
+            {
+                MakeReady(e.Key);
+                return;
+            }
+
             pending.Exists = exists;
             if (exists || e.Value != null)
                 pending.Value = e.Value;
             pending.Computed = e.EventFlags.HasFlag(EventTypeFlags.Computed);
             pending.FromReset = fromReset;
-            pending.SyncOnly = false;
+            pending.SyncOnly = syncOnly;
             pending.RetryFlags = 0;
             _pending[e.Key] = pending;
             MakeReady(e.Key);

@@ -209,6 +209,25 @@ namespace Steeltoe.Informers.InformersBase.Tests
         }
 
         [Fact]
+        public async Task SyncEvents_ReachTheHandlerFlaggedSync()
+        {
+            var source = new TestSource<string, int>();
+            source.SendReset(P("a", 1));
+            var synced = new TaskCompletionSource<ResourceEvent<string, int>>();
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            var run = source.Resync(TimeSpan.FromMilliseconds(100)).RunAsync((e, ct) =>
+            {
+                if (e.EventFlags.HasFlag(EventTypeFlags.Sync))
+                    synced.TrySetResult(e);
+                return Task.CompletedTask;
+            }, Fast(), cts.Token);
+            var e = await synced.Task.TimeoutIfNotDebugging();
+            e.EventFlags.Should().HaveFlag(EventTypeFlags.Modify);
+            cts.Cancel();
+            await run;
+        }
+
+        [Fact]
         public async Task Deletes_ReachTheHandler_WithLastValue()
         {
             var source = new TestSource<string, int>();

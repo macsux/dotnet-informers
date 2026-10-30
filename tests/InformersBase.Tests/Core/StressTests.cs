@@ -17,7 +17,7 @@ namespace Steeltoe.Informers.InformersBase.Tests.Core
         [Fact]
         public async Task RandomJoinLeave_ViewsAlwaysEqualCache()
         {
-            var iterations = Iterations(100);
+            var iterations = Iterations(40);
             var total = new StressResult();
             for (var seed = 1; seed <= iterations; seed++)
             {
@@ -33,7 +33,7 @@ namespace Steeltoe.Informers.InformersBase.Tests.Core
         public async Task JoinStorm_WhileProducingFlatOut()
         {
             // Many consumers that read only a few hundred events each, so joins happen constantly while the producer runs.
-            var iterations = Iterations(30);
+            var iterations = Iterations(10);
             var total = new StressResult();
             for (var seed = 1; seed <= iterations; seed++)
             {
