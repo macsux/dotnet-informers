@@ -420,6 +420,121 @@ namespace Steeltoe.Informers.KubernetesBase
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
+        private string BuildUrl(GroupVersionResource resource, string namespaceParameter, string name = null, bool statusOnly = false)
+        {
+            var segments = new List<string> { (_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/') };
+            if (string.IsNullOrEmpty(resource.Group))
+            {
+                segments.Add("api");
+            }
+            else
+            {
+                segments.Add("apis");
+                segments.Add(resource.Group);
+            }
+
+            segments.Add(resource.Version);
+            if (!string.IsNullOrEmpty(namespaceParameter))
+            {
+                segments.Add("namespaces");
+                segments.Add(Uri.EscapeDataString(namespaceParameter));
+            }
+
+            segments.Add(resource.Resource);
+            if (!string.IsNullOrEmpty(name))
+            {
+                segments.Add(Uri.EscapeDataString(name));
+            }
+
+            if (statusOnly)
+            {
+                segments.Add("status");
+            }
+
+            return string.Join("/", segments);
+        }
+
+        /// <inheritdoc />
+        async Task<HttpResponseMessage> IKubernetesResourceClient.SendListAsync(GroupVersionResource resource, string namespaceParameter, KubernetesListRequest request, CancellationToken cancellationToken)
+        {
+            if (resource == null)
+            {
+                throw new ArgumentNullException(nameof(resource));
+            }
+
+            request ??= new KubernetesListRequest();
+            var sb = new StringBuilder();
+            AddQueryParameter(sb, "allowWatchBookmarks", request.AllowWatchBookmarks);
+            AddQueryParameter(sb, "continue", request.Continue);
+            AddQueryParameter(sb, "fieldSelector", request.FieldSelector);
+            AddQueryParameter(sb, "labelSelector", request.LabelSelector);
+            AddQueryParameter(sb, "limit", request.Limit);
+            AddQueryParameter(sb, "resourceVersion", request.ResourceVersion);
+            AddQueryParameter(sb, "timeoutSeconds", request.TimeoutSeconds);
+            AddQueryParameter(sb, "watch", request.Watch ? true : (bool?)null);
+            var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(BuildUrl(resource, namespaceParameter) + sb));
+            if (!string.IsNullOrEmpty(request.Accept))
+            {
+                httpRequest.Headers.TryAddWithoutValidation("Accept", request.Accept);
+            }
+
+            if (_credentials != null)
+            {
+                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            }
+
+            var httpResponse = await _client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (!httpResponse.IsSuccessStatusCode)
+            {
+                var content = httpResponse.Content != null ? await httpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false) : string.Empty;
+                var ex = new HttpOperationException($"Operation returned an invalid status code '{httpResponse.StatusCode}'")
+                {
+                    Request = new HttpRequestMessageWrapper(httpRequest, null),
+                    Response = new HttpResponseMessageWrapper(httpResponse, content),
+                };
+                httpRequest.Dispose();
+                httpResponse.Dispose();
+                throw ex;
+            }
+
+            return httpResponse;
+        }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<GroupVersionResource, bool> _namespaced = new System.Collections.Concurrent.ConcurrentDictionary<GroupVersionResource, bool>();
+
+        /// <inheritdoc />
+        async Task<bool> IKubernetesResourceClient.IsNamespacedAsync(GroupVersionResource resource, CancellationToken cancellationToken)
+        {
+            if (_namespaced.TryGetValue(resource, out var namespaced))
+            {
+                return namespaced;
+            }
+
+            var url = $"{(_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/')}/{(string.IsNullOrEmpty(resource.Group) ? "api" : "apis/" + resource.Group)}/{resource.Version}";
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
+            if (_credentials != null)
+            {
+                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            }
+
+            using var httpResponse = await _client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            var content = await httpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!httpResponse.IsSuccessStatusCode)
+            {
+                throw new HttpOperationException($"Discovery of {resource} returned '{httpResponse.StatusCode}'")
+                {
+                    Request = new HttpRequestMessageWrapper(httpRequest, null),
+                    Response = new HttpResponseMessageWrapper(httpResponse, content),
+                };
+            }
+
+            var resources = KubernetesJson.Deserialize<V1APIResourceList>(content);
+            var match = resources.Resources?.FirstOrDefault(x => x.Name == resource.Resource)
+                ?? throw new InvalidOperationException($"The API server doesn't serve {resource}");
+            _namespaced[resource] = match.Namespaced;
+            return match.Namespaced;
+        }
+
         private static object DeserializeObject(Type type, string json) =>
             DeserializeMethod.MakeGenericMethod(type).Invoke(null, new object[] { json, null });
 
@@ -485,39 +600,7 @@ namespace Steeltoe.Informers.KubernetesBase
                 }
             }
 
-            var entityAttribute = resourceType.GetKubernetesTypeMetadata();
-            var isLegacy = string.IsNullOrEmpty(entityAttribute.Group);
-            var segments = new List<string> { (_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/') };
-            if (isLegacy)
-            {
-                segments.Add("api");
-            }
-            else
-            {
-                segments.Add("apis");
-                segments.Add(entityAttribute.Group);
-            }
-
-            segments.Add(entityAttribute.ApiVersion);
-
-            if (!string.IsNullOrEmpty(namespaceParameter))
-            {
-                segments.Add("namespaces");
-                segments.Add(Uri.EscapeDataString(namespaceParameter));
-            }
-
-            segments.Add(entityAttribute.PluralName);
-            if (!string.IsNullOrEmpty(name))
-            {
-                segments.Add(Uri.EscapeDataString(name));
-            }
-
-            if (statusOnly.GetValueOrDefault())
-            {
-                segments.Add("status");
-            }
-
-            var url = string.Join("/", segments);
+            var url = BuildUrl(GroupVersionResource.For(resourceType), namespaceParameter, name, statusOnly.GetValueOrDefault());
 
             var sb = new StringBuilder();
             AddQueryParameter(sb, "export", export);

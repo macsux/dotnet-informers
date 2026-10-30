@@ -1,6 +1,4 @@
-using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Steeltoe.Informers.InformersBase;
@@ -10,63 +8,69 @@ namespace System.Linq
 {
     public static partial class Informable
     {
+        /// <summary>
+        ///     Mirrors the informable into <paramref name="cache" /> as it's enumerated, and passes every event on after the cache reflects it.
+        ///     A reset replaces the cache content (and completes <see cref="SimpleCache{TKey,TResource}.Synchronized" />).
+        /// </summary>
+        /// <param name="source">The source informable</param>
+        /// <param name="cache">The cache to keep up to date</param>
+        /// <param name="mapper">Optional: combines the cached value with an update into the value to store</param>
         public static IInformable<TKey, TResource> Into<TKey, TResource>(
             this IInformable<TKey, TResource> source,
             ICache<TKey, TResource> cache,
-            Func<TResource, TResource, TResource> mapper = null)        
+            Func<TResource, TResource, TResource> mapper = null)
         {
-            if (mapper == null)
+            if (source == null)
+                throw Error.ArgumentNull(nameof(source));
+            if (cache == null)
+                throw Error.ArgumentNull(nameof(cache));
+            return Create<TKey, TResource>(cancellationToken => IntoIterator(source, cache, mapper, cancellationToken));
+        }
+
+        private static async IAsyncEnumerator<ResourceEvent<TKey, TResource>> IntoIterator<TKey, TResource>(
+            IInformable<TKey, TResource> source,
+            ICache<TKey, TResource> cache,
+            Func<TResource, TResource, TResource> mapper,
+            CancellationToken cancellationToken)
+        {
+            var resets = new ResetCollector<TKey, TResource>();
+            await foreach (var e in source.WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                mapper = (oldResource, newResource) => newResource;
-            }
-
-          
-            async IAsyncEnumerator<ResourceEvent<TKey, TResource>> SourceEnumerator(CancellationToken token)
-            {
-                long msgNum = 0;
-                var synchronizedSource = source.WithResets(events =>
+                if (resets.TryCollect(e, out var reset))
                 {
-                    var reset = events
-                        .Where(x => x.Key != null && x.Value != null)
-                        .ToDictionary(x => x.Key, x => x.Value);
-
-                    cache.Reset(reset);
-                    cache.Version += events.Count;
-                    return events;
-                }, notification =>
-                {
-                    if (notification.EventFlags.HasFlag(EventTypeFlags.Reset))
+                    if (reset == null)
+                        continue;
+                    var items = new Dictionary<TKey, TResource>();
+                    foreach (var item in reset)
+                        items[item.Key] = item.Value;
+                    cache.Reset(items);
+                    cache.Version += reset.Count;
+                    if (reset.Count == 0)
                     {
-                    }
-                    else if (!notification.EventFlags.HasFlag(EventTypeFlags.Delete))
-                    {
-                        cache.Version++;
-                        if (notification.Value != null)
-                        {
-                            var key = notification.Key;
-                            if (cache.TryGetValue(key, out var existing))
-                            {
-                                notification = new ResourceEvent<TKey, TResource>(notification.EventFlags, notification.Key, mapper(existing, notification.Value));
-                            }
-                            cache[notification.Key] = notification.Value;
-                        }
-                    }
-                    else
-                    {
-                        cache.Remove(notification.Key);
+                        yield return ResourceEvent<TKey, TResource>.EmptyReset;
+                        continue;
                     }
 
-                    return notification;
-                    // return new CacheSynchronized<ResourceEvent<TKey, TResource>>(msgNum, cache.Version, notification);
-                });
-                await foreach (var item in synchronizedSource.WithCancellation(token))
-                {
-                    yield return item;
+                    foreach (var item in reset)
+                        yield return item;
+                    continue;
                 }
+
+                var notification = e;
+                if (e.EventFlags.HasFlag(EventTypeFlags.Delete))
+                {
+                    cache.Remove(e.Key);
+                }
+                else
+                {
+                    if (mapper != null && cache.TryGetValue(e.Key, out var existing))
+                        notification = new ResourceEvent<TKey, TResource>(e.EventFlags, e.Key, mapper(existing, e.Value));
+                    cache[e.Key] = notification.Value;
+                }
+
+                cache.Version++;
+                yield return notification;
             }
-            return Create<TKey, TResource>(SourceEnumerator);
         }
     }
-    
-    
 }

@@ -20,9 +20,9 @@ namespace Steeltoe.Informers.KubernetesBase.Cache
         public List<TResource> ByNamespace(string name) => ByIndex("namespace", name);
         public List<TResource> ByLabel(string labelName) => ByIndex("label", labelName);
         public List<TResource> ByLabel(string labelName, string labelValue) => ByIndex("labelValue", $"{labelName}:{labelValue}");
-        public void Add(TResource value) => Add(value.Metadata.Name, value);
-        public void Set(TResource value) => this[value.Metadata.Name] = value;
-        public bool Remove(TResource value) => Remove(value.Metadata.Name);
-        public bool Contains(TResource value) => ContainsKey(value.Metadata.Name);
+        public void Add(TResource value) => Add(value.ObjectKey(), value);
+        public void Set(TResource value) => this[value.ObjectKey()] = value;
+        public bool Remove(TResource value) => Remove(value.ObjectKey());
+        public bool Contains(TResource value) => ContainsKey(value.ObjectKey());
     }
 }

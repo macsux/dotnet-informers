@@ -1,20 +1,21 @@
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Steeltoe.Informers.InformersBase;
-using Steeltoe.Informers.InformersBase.Cache;
 
 namespace System.Linq
 {
     public partial class Informable
     {
-        public static async Task<IList<TSource>> ToLookup<TKey, TSource>(this IInformable<TKey, TSource> source, Func<TSource, TKey> keySelector, CancellationToken cancellationToken = default)
+        /// <summary>Groups the informable's current state (its first reset) by <paramref name="keySelector" />.</summary>
+        public static async Task<ILookup<TLookupKey, TSource>> ToLookup<TKey, TSource, TLookupKey>(
+            this IInformable<TKey, TSource> source,
+            Func<TSource, TLookupKey> keySelector,
+            CancellationToken cancellationToken = default)
         {
-            var result = await source.ToEventList(cancellationToken);
-            return result.Select(x => x.Value).ToList();
+            if (keySelector == null)
+                throw Error.ArgumentNull(nameof(keySelector));
+            var result = await source.ToEventList(cancellationToken).ConfigureAwait(false);
+            return result.Select(x => x.Value).ToLookup(keySelector);
         }
     }
 }

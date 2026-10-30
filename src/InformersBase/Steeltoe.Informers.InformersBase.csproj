@@ -2,15 +2,5 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="System.Interactive.Async" />
-    <PackageReference Include="System.Reactive" />
-  </ItemGroup>
-  <ItemGroup>
-    <Compile Remove="Linq2\**" />
-    <Compile Remove="Internal\**" />
-    <Compile Remove="Operators\Join.cs" />
-    <Compile Remove="DeltaQueue.cs" />
-    <Compile Remove="DeltaQueue2.cs" />
-    <Compile Remove="Linq\Operators\GroupBy.cs" />
-    <Compile Remove="Linq\Operators\Join.cs" />
   </ItemGroup>
 </Project>

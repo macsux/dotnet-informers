@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Threading.Tasks;
 using k8s;
 using k8s.Autorest;
 
@@ -20,9 +21,14 @@ namespace Steeltoe.Informers.KubernetesBase
                 return statusException.Response.StatusCode >= HttpStatusCode.ServiceUnavailable || statusException.Response.StatusCode == HttpStatusCode.RequestTimeout;
             }
 
-            if (exception is HttpRequestException || exception is KubernetesException)
+            if (exception is HttpRequestException || exception is KubernetesException || exception is System.IO.IOException || exception is TimeoutException)
             {
                 return true;
+            }
+
+            if (exception is TaskCanceledException { InnerException: TimeoutException })
+            {
+                return true; // HttpClient timeout
             }
 
             return false;
@@ -34,6 +40,16 @@ namespace Steeltoe.Informers.KubernetesBase
         {
             HttpOperationException { Response.StatusCode: HttpStatusCode.Gone } => true,
             KubernetesException { Status.Code: (int)HttpStatusCode.Gone } => true,
+            _ => false,
+        };
+
+        /// <summary>
+        ///     Checks if the exception is an optimistic-concurrency conflict (HTTP 409): the object changed since it was read
+        /// </summary>
+        public static bool IsConflict(this Exception exception) => exception switch
+        {
+            HttpOperationException { Response.StatusCode: HttpStatusCode.Conflict } => true,
+            KubernetesException { Status.Code: (int)HttpStatusCode.Conflict } => true,
             _ => false,
         };
 

@@ -1,59 +1,58 @@
 using System;
 using System.Collections.Generic;
+using System.Linq.Expressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Steeltoe.Informers.InformersBase
 {
     /// <summary>
-    ///     Provides observable abstraction over collections of resource of type <typeparamref name="TResource" /> which support List/Watch semantics
+    ///     A shared informer: a level-triggered replica of a collection of <typeparamref name="TResource" /> that supports list/watch.
+    ///     Enumerating it attaches a consumer to one shared producer (one list/watch connection per distinct server filter, however many
+    ///     consumers are attached). Every consumer starts with a reset holding the current state, then receives changes merged per key.
     /// </summary>
+    /// <remarks>
+    ///     Objects are shared by reference between every consumer and must not be modified; clone an object before changing it.
+    /// </remarks>
+    /// <typeparam name="TKey">The type of key</typeparam>
     /// <typeparam name="TResource">The type of resource</typeparam>
-    public interface IInformer<TKey, TResource>
+    public interface IInformer<TKey, TResource> : IInformable<TKey, TResource>
     {
+        /// <summary>Lists the current objects once, without attaching a consumer.</summary>
         IAsyncEnumerable<TResource> List(CancellationToken cancellationToken = default);
-        /// <summary>
-        ///     Exposes an Observable stream over a resource of a particular type
-        /// </summary>
-        /// <remarks>
-        ///     Message stream semantics are as following
-        ///     - When subscription is first established and <see cref="ResourceStreamType" /> is has <see cref="ResourceStreamType.List" /> flag set
-        ///     the first batch of messages that will be sent when subscription is opened the current state of all the objects being monitored.
-        ///     This batch is referred to as "resource list reset".
-        ///     - Each message in reset event will be of type <see cref="EventTypeFlags.Reset" />
-        ///     - The boundaries of the reset event will be marked with <see cref="EventTypeFlags.ResetStart" /> and <see cref="EventTypeFlags.ResetEnd" />
-        ///     - If there are no objects in a reset list event, and the <paramref name="type" /> has a flag <see cref="ResourceStreamType.Watch" /> set,
-        ///     message with flag <see cref="EventTypeFlags.ResetEmpty" /> is used to mark the end of List operation and start of Watch
-        /// </remarks>
-        /// <param name="type">Observable type</param>
-        /// <returns>Observable stream for resources of a particular type</returns>
+
+        /// <summary>The informer itself, kept for compatibility: an informer is an informable.</summary>
         IInformable<TKey, TResource> ListWatch();
+
+        /// <summary>
+        ///     Whether the producer serving this informer (for its server filter) is running and has applied its first complete list.
+        /// </summary>
+        bool IsSynced { get; }
+
+        /// <summary>
+        ///     Completes once the producer serving this informer has applied its first complete list. Producers only run while a consumer is
+        ///     attached, so this waits for a consumer (e.g. an <c>Into</c> or <c>RunAsync</c>) to attach and the list to arrive. Throws
+        ///     <see cref="InformerException" /> if the producer fails.
+        /// </summary>
+        Task WaitForSyncAsync(CancellationToken cancellationToken = default);
+
+        /// <summary>
+        ///     Filters the informer. Terms of the predicate the source can translate are pushed down to the server subscription and become part
+        ///     of the sharing key; the rest is evaluated client-side. Objects that stop matching arrive as deletes, objects that start matching
+        ///     as adds.
+        /// </summary>
+        IInformer<TKey, TResource> Where(Expression<Func<TResource, bool>> predicate);
     }
 
     /// <summary>
-    ///     Provides observable abstraction over collections of resource of type <typeparamref name="TResource" /> which support List/Watch semantics,
-    ///     and support subscriptions with type <typeparamref name="TOptions" />
+    ///     An informer whose subscriptions take explicit options of type <typeparamref name="TOptions" />.
     /// </summary>
-    /// <typeparam name="TResource">The type of resource</typeparam>
-    /// <typeparam name="TOptions">The type of options</typeparam>
     public interface IInformer<TKey, TResource, in TOptions>
     {
+        /// <summary>Lists the current objects matching <paramref name="options" /> once.</summary>
         IAsyncEnumerable<TResource> List(TOptions options, CancellationToken cancellationToken = default);
-        /// <summary>
-        ///     Exposes an Observable stream over a resource of a particular type
-        /// </summary>
-        /// <remarks>
-        ///     Message stream semantics are as following
-        ///     - When subscription is first established and <see cref="ResourceStreamType" /> is has <see cref="ResourceStreamType.List" /> flag set
-        ///     the first batch of messages that will be sent when subscription is opened the current state of all the objects being monitored.
-        ///     This batch is referred to as "resource list reset".
-        ///     - Each message in reset event will be of type <see cref="EventTypeFlags.Reset" />
-        ///     - The boundaries of the reset event will be marked with <see cref="EventTypeFlags.ResetStart" /> and <see cref="EventTypeFlags.ResetEnd" />
-        ///     - If there are no objects in a reset list event, and the <paramref name="type" /> has a flag <see cref="ResourceStreamType.Watch" /> set,
-        ///     message with flag <see cref="EventTypeFlags.ResetEmpty" /> is used to mark the end of List operation and start of Watch
-        /// </remarks>
-        /// <param name="type">Observable type</param>
-        /// <param name="options"></param>
-        /// <returns></returns>
-        IInformable<TKey, TResource> ListWatch(TOptions options);
+
+        /// <summary>The shared informer for the given options.</summary>
+        IInformer<TKey, TResource> ListWatch(TOptions options);
     }
 }

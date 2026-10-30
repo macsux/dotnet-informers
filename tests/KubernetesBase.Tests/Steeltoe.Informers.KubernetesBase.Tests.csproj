@@ -3,15 +3,15 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <SignAssembly>true</SignAssembly>
+    <!-- the informer tests drive enumerators with their own cancellation and timeouts -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AwesomeAssertions" />
     <PackageReference Include="Microsoft.Extensions.Logging" />
     <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
-    <PackageReference Include="Microsoft.Reactive.Testing" />
     <PackageReference Include="Nito.AsyncEx" />
     <PackageReference Include="NSubstitute" />
-    <PackageReference Include="System.Reactive" />
     <PackageReference Include="System.Interactive.Async" />
     <PackageReference Include="WireMock.Net" />
     <PackageReference Include="xunit.v3" />

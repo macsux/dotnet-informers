@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Data.SqlTypes;
 using System.Linq;
-using System.Reactive.Linq;
 using System.Threading;
 using Steeltoe.Informers.InformersBase;
 
@@ -56,27 +54,6 @@ namespace System.Linq
         }
         
 
-        internal static IInformable<TKey, TResult> GroupBy<TKeyOuter, TOuter, TKeyInner, TInner, TKey, TResult>(
-            this IInformable<TKeyOuter, TOuter> outer,
-            IInformable<TKeyInner, TInner> inner,
-            Func<TOuter, TKey> outerKeySelector,
-            Func<TInner, TKey> innerKeySelector,
-            Func<TOuter, TInner, TResult> resultSelector)
-        {
-            throw new NotImplementedException();
-        }
-
-        internal static IInformable<Tuple<TOuterKey, TInnerKey>, TResult> GroupJoin<TOuterKey, TOuter, TInnerKey, TInner, TJoinKey, TResultKey, TResult>(
-            this IInformable<TOuter, TOuter> outer,
-            Func<TInner, TJoinKey> innerKeySelector,
-            Func<TOuter, TJoinKey> outerKeySelector,
-            Func<TOuter, IInformable<TInnerKey, TInner>, TResult> resultSelector,
-            IEqualityComparer<TJoinKey> comparer = default
-        )
-        {
-            throw new NotImplementedException();
-
-        }
         internal static IInformable<TKey, TResource> TakeWhile<TKey, TResource>(this IInformable<TKey, TResource> source, Func<TResource, bool> predicate)
         {
             return source.Where(x => x.EventFlags.IsMeta() || predicate(x.Value)).AsInformable();
@@ -179,55 +156,7 @@ namespace System.Linq
         {
             throw new NotImplementedException();
         }
-        internal static IObservable<bool> Contains<TKey, TSource>(this IInformable<TKey, TSource> source, TKey itemKey)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> Contains<TKey, TSource>(this IInformable<TKey, TSource> source, TSource item, IEqualityComparer<TSource> comparer)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> InformerEquals<TKey, TSource>(this IInformable<TKey, TSource> source, IInformable<TKey, TSource> other)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> InformerEquals<TKey, TSource>(this IInformable<TKey, TSource> source, IInformable<TKey, TSource> other, IEqualityComparer<TSource> comparer)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> Any<TKey, TSource>(this IInformable<TKey, TSource> source)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> Any<TKey, TSource>(this IInformable<TKey, TSource> source, Func<TSource, bool> predicate)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> All<TKey, TSource>(this IInformable<TKey, TSource> source)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<bool> All<TKey, TSource>(this IInformable<TKey, TSource> source, Func<TSource, bool> predicate)
-        {
-            throw new NotImplementedException();
-        }
        
-        internal static IObservable<int> Count<TKey, TSource>(this IInformable<TKey, TSource> source)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<int> Count<TKey, TSource>(this IInformable<TKey, TSource> source, Func<TSource, bool> predicate)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<long> LongCount<TKey, TSource>(this IInformable<TKey, TSource> source)
-        {
-            throw new NotImplementedException();
-        }
-        internal static IObservable<long> LongCount<TKey, TSource>(this IInformable<TKey, TSource> source, Func<TSource, bool> predicate)
-        {
-            throw new NotImplementedException();
-        }
         internal static IInformable<TKey, TSource> Min<TKey, TSource>(this IInformable<TKey, TSource> source)
         {
             throw new NotImplementedException();

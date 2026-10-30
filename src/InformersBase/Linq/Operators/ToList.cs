@@ -13,7 +13,7 @@ namespace System.Linq
     {
         public static async Task<IList<TSource>> ToList<TKey, TSource>(this IInformable<TKey, TSource> source, CancellationToken cancellationToken = default)
         {
-            var result = await source.ToEventList(cancellationToken);
+            var result = await source.ToEventList(cancellationToken).ConfigureAwait(false);
             return result.Select(x => x.Value).ToList();
         }
     }

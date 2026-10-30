@@ -8,8 +8,22 @@ using k8s.Autorest;
 
 namespace Steeltoe.Informers.KubernetesBase
 {
-    internal interface IKubernetesGenericClient
+    /// <summary>What informers need from the API server: list/watch by group/version/resource, and scope discovery.</summary>
+    internal interface IKubernetesResourceClient
     {
+        /// <summary>
+        ///     Sends a list or watch request for a resource addressed by group/version/resource and returns the response once its headers
+        ///     arrived, so a watch body can be streamed. Throws <see cref="HttpOperationException" /> for an unsuccessful status.
+        /// </summary>
+        Task<System.Net.Http.HttpResponseMessage> SendListAsync(GroupVersionResource resource, string namespaceParameter, KubernetesListRequest request, CancellationToken cancellationToken = default);
+
+        /// <summary>Whether a resource is namespaced, from API discovery (cached).</summary>
+        Task<bool> IsNamespacedAsync(GroupVersionResource resource, CancellationToken cancellationToken = default);
+    }
+
+    internal interface IKubernetesGenericClient : IKubernetesResourceClient
+    {
+
         Task<HttpOperationResponse<KubernetesList<T>>> ListWithHttpMessagesAsync<T>(
             string namespaceParameter = default,
             bool? allowWatchBookmarks = default,

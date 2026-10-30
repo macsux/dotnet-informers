@@ -2,9 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reactive.Concurrency;
-using System.Reactive.Disposables;
-using System.Reactive.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -49,43 +46,10 @@ namespace Steeltoe.Informers.KubernetesBase
             return obj;
         }
 
-        /// <summary>
-        ///     Reads a watch response (newline delimited JSON watch events) as an observable stream of events.
-        ///     A watch event of type <see cref="WatchEventType.Error" /> is surfaced as <see cref="KubernetesException" /> carrying the server <see cref="V1Status" />
-        /// </summary>
-        public static IObservable<Watcher<T>.WatchEvent> Watch<T>(this Task<HttpOperationResponse<KubernetesList<T>>> responseTask) where T : IKubernetesObject
-        {
-            return Observable.Create<Watcher<T>.WatchEvent>(async (observer, cancellationToken) =>
-            {
-                using var response = await responseTask.ConfigureAwait(false);
-                await using var stream = await response.Response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                using var reader = new StreamReader(stream);
-                string line;
-                while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) != null)
-                {
-                    if (string.IsNullOrWhiteSpace(line))
-                    {
-                        continue;
-                    }
-
-                    var watchEvent = KubernetesJson.Deserialize<Watcher<T>.WatchEvent>(line);
-                    if (watchEvent.Type == WatchEventType.Error)
-                    {
-                        var status = KubernetesJson.Deserialize<Watcher<V1Status>.WatchEvent>(line).Object;
-                        throw new KubernetesException(status);
-                    }
-
-                    observer.OnNext(watchEvent);
-                }
-
-                observer.OnCompleted();
-            });
-        }
-
         public static ResourceEvent<string, TResource> ToResourceEvent<TResource>(this TResource obj, EventTypeFlags typeFlags)
             where TResource : IKubernetesObject<V1ObjectMeta>
         {
-            return new ResourceEvent<string, TResource>(typeFlags, obj.Metadata.Name, obj);
+            return new ResourceEvent<string, TResource>(typeFlags, obj.ObjectKey(), obj);
         }
 
         internal static bool IsValidKubernetesName(this string value)
