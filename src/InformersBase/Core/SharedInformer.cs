@@ -102,14 +102,16 @@ namespace Steeltoe.Informers.InformersBase
             var cursor = new CancellableCursor(_registry.Acquire(_filter), cancellationToken);
             if (_remainder == null)
                 return cursor;
-            return Informable.Create(_ => cursor).Where(_remainder).GetAsyncEnumerator(cancellationToken);
+            return new OwningEnumerator(Informable.Create(_ => cursor).Where(_remainder).GetAsyncEnumerator(cancellationToken), cursor);
         }
 
         SharedSubscription<TKey, TResource> ISharedSource<TKey, TResource>.Subscribe(CancellationToken cancellationToken)
         {
             var cursor = _registry.Acquire(_filter);
             var cancellable = new CancellableCursor(cursor, cancellationToken);
-            var events = _remainder == null ? (IAsyncEnumerator<ResourceEvent<TKey, TResource>>)cancellable : Informable.Create(_ => cancellable).Where(_remainder).GetAsyncEnumerator(cancellationToken);
+            var events = _remainder == null
+                ? (IAsyncEnumerator<ResourceEvent<TKey, TResource>>)cancellable
+                : new OwningEnumerator(Informable.Create(_ => cancellable).Where(_remainder).GetAsyncEnumerator(cancellationToken), cancellable);
             return new SharedSubscription<TKey, TResource>(cursor.Cache, _remainder, events);
         }
 
@@ -129,6 +131,37 @@ namespace Steeltoe.Informers.InformersBase
             public ResourceEvent<TKey, TResource> Current => _cursor.Current;
             public ValueTask<bool> MoveNextAsync() => _cursor.MoveNextAsync(_cancellationToken);
             public ValueTask DisposeAsync() => _cursor.DisposeAsync();
+        }
+
+        /// <summary>
+        ///     Disposes the cursor too: a client-side <c>Where</c> only takes ownership of its source on its first pull, so disposing it before
+        ///     that would otherwise leak the cursor (and keep the producer running).
+        /// </summary>
+        private sealed class OwningEnumerator : IAsyncEnumerator<ResourceEvent<TKey, TResource>>
+        {
+            private readonly IAsyncEnumerator<ResourceEvent<TKey, TResource>> _inner;
+            private readonly IAsyncEnumerator<ResourceEvent<TKey, TResource>> _cursor;
+
+            public OwningEnumerator(IAsyncEnumerator<ResourceEvent<TKey, TResource>> inner, IAsyncEnumerator<ResourceEvent<TKey, TResource>> cursor)
+            {
+                _inner = inner;
+                _cursor = cursor;
+            }
+
+            public ResourceEvent<TKey, TResource> Current => _inner.Current;
+            public ValueTask<bool> MoveNextAsync() => _inner.MoveNextAsync();
+
+            public async ValueTask DisposeAsync()
+            {
+                try
+                {
+                    await _inner.DisposeAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    await _cursor.DisposeAsync().ConfigureAwait(false); // idempotent
+                }
+            }
         }
 
         /// <summary>Hands out one producer and cache per server filter, ref-counted by attached cursors.</summary>
@@ -226,7 +259,9 @@ namespace Steeltoe.Informers.InformersBase
                 TaskCompletionSource<bool> waiter;
                 lock (_lock)
                 {
-                    if (!_shared.TryGetValue(filter, out var current) || current != shared || !_syncWaiters.Remove(filter, out waiter))
+                    // a failed producer is already detached; its waiters fail unless a newer producer took over the filter
+                    var current = _shared.TryGetValue(filter, out var c) ? c : null;
+                    if ((current != shared && !(synced.IsFaulted && current == null)) || !_syncWaiters.Remove(filter, out waiter))
                         return;
                 }
 
@@ -253,6 +288,7 @@ namespace Steeltoe.Informers.InformersBase
                         InformerDiagnostics.ActiveProducers.Add(-1, _nameTag);
                     }
 
+                    Detach(filter, shared);
                     shared.Cache.Complete();
                 }
                 catch (OperationCanceledException) when (shared.Cts.IsCancellationRequested)
@@ -261,7 +297,18 @@ namespace Steeltoe.Informers.InformersBase
                 }
                 catch (Exception e)
                 {
+                    // consumers attached now drain and fail; consumers attaching later get a fresh producer
+                    Detach(filter, shared);
                     shared.Cache.SetError(e);
+                }
+            }
+
+            private void Detach(ServerFilter filter, Shared shared)
+            {
+                lock (_lock)
+                {
+                    if (_shared.TryGetValue(filter, out var current) && current == shared)
+                        _shared.Remove(filter);
                 }
             }
 
@@ -271,7 +318,8 @@ namespace Steeltoe.Informers.InformersBase
                 {
                     if (--shared.RefCount > 0)
                         return;
-                    _shared.Remove(filter);
+                    if (_shared.TryGetValue(filter, out var current) && current == shared)
+                        _shared.Remove(filter);
                 }
 
                 shared.Cts.Cancel();

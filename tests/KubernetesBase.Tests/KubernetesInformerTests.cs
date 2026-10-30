@@ -212,6 +212,21 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
         }
 
         [Fact]
+        public async Task TruncatedWatchEvent_IsRetriedLikeABrokenConnection()
+        {
+            var api = new FakeApiServer();
+            api.Put(Pods, Pod("default", "a"));
+            var informer = Factory(api).Get<V1Pod>();
+            await using var e = informer.GetAsyncEnumerator(Ct);
+            await ReadReset(e);
+            await WaitUntil(() => api.OpenWatches == 1);
+            api.EndWatchesWith("{\"type\":\"MODIFIED\",\"object\":{\"kind\":");
+            await WaitUntil(() => api.OpenWatches == 1 && api.WatchRequests == 2);
+            api.Put(Pods, Pod("default", "b"));
+            (await Next(e)).Key.Should().Be("default/b");
+        }
+
+        [Fact]
         public async Task WatchEnd_RewatchesFromBookmarkVersion()
         {
             var api = new FakeApiServer();

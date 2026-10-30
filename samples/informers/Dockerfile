@@ -4,6 +4,7 @@ COPY ["global.json", "Directory.Build.props", "Directory.Packages.props", "./"]
 COPY ["src/InformersBase/Steeltoe.Informers.InformersBase.csproj", "src/InformersBase/"]
 COPY ["src/KubernetesBase/Steeltoe.Informers.KubernetesBase.csproj", "src/KubernetesBase/"]
 COPY ["src/KubernetesCore/Steeltoe.Informers.KubernetesCore.csproj", "src/KubernetesCore/"]
+COPY ["samples/Controllers/Steeltoe.Informers.Samples.Controllers.csproj", "samples/Controllers/"]
 COPY ["samples/informers/informers.csproj", "samples/informers/"]
 RUN dotnet restore "samples/informers/informers.csproj"
 COPY . .

@@ -209,6 +209,38 @@ namespace Steeltoe.Informers.InformersBase.Tests
         }
 
         [Fact]
+        public async Task FailedDelete_SupersededByReAdd_IsNeverRetriedAsADelete()
+        {
+            var source = new TestSource<string, int>();
+            source.SendReset(P("k", 1));
+            var events = new ConcurrentQueue<EventTypeFlags>();
+            var deleteRunning = new TaskCompletionSource<bool>();
+            var releaseDelete = new TaskCompletionSource<bool>();
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            var run = source.RunAsync(async (e, ct) =>
+            {
+                events.Enqueue(e.EventFlags);
+                if (e.EventFlags.HasFlag(EventTypeFlags.Delete))
+                {
+                    deleteRunning.TrySetResult(true);
+                    await releaseDelete.Task;
+                    throw new InvalidOperationException("delete failed");
+                }
+            }, new RunOptions { Backoff = Backoff.Constant(TimeSpan.FromMilliseconds(100)) }, cts.Token);
+            await Task.Delay(50, Ct);
+            source.Send(E(EventTypeFlags.Delete, "k", 1));
+            await deleteRunning.Task.TimeoutIfNotDebugging();
+            source.Send(E(EventTypeFlags.Add, "k", 2)); // re-added while the delete runs
+            await Task.Delay(50, Ct);
+            releaseDelete.SetResult(true);
+            await Task.Delay(400, Ct); // well past the retry delay
+            cts.Cancel();
+            await run.TimeoutIfNotDebugging();
+            events.Count(x => x.HasFlag(EventTypeFlags.Delete)).Should().Be(1, "the re-add supersedes the failed delete's retry");
+            events.Last().Should().HaveFlag(EventTypeFlags.Add);
+        }
+
+        [Fact]
         public async Task SyncEvents_ReachTheHandlerFlaggedSync()
         {
             var source = new TestSource<string, int>();

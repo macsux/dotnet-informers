@@ -62,9 +62,11 @@ namespace System.Linq
             private readonly ChangeQueue<TKey, TResource> _queue = new ChangeQueue<TKey, TResource>();
             private readonly Dictionary<TKey, int> _attempts = new Dictionary<TKey, int>();
             private readonly Dictionary<TKey, int> _conflicts = new Dictionary<TKey, int>();
-            private readonly Dictionary<TKey, long> _retryGeneration = new Dictionary<TKey, long>();
+            private readonly Dictionary<TKey, long> _scheduled = new Dictionary<TKey, long>(); // key -> token of its pending timed retry
+            private long _nextToken;
             private readonly HashSet<Task> _running = new HashSet<Task>();
             private readonly ResetCollector<TKey, TResource> _resets = new ResetCollector<TKey, TResource>();
+            private readonly CancellationTokenSource _timers = new CancellationTokenSource();
             private TaskCompletionSource<bool> _signal = NewSignal();
             private int _scheduledRetries;
             private int _inFlight;
@@ -101,6 +103,7 @@ namespace System.Linq
                     lock (_lock)
                         running = _running.ToArray();
                     await Task.WhenAll(running).ConfigureAwait(false);
+                    _timers.Cancel(); // pending retries die with the loop
                     ReportDepth(0);
                 }
 
@@ -193,7 +196,12 @@ namespace System.Linq
                                 if (taken == null)
                                 {
                                     slots.Release();
-                                    return; // the source ended (or failed) and all work is done
+                                    // the source ended or failed; running handlers keep their (still linked) token until they finish
+                                    Task[] remaining;
+                                    lock (_lock)
+                                        remaining = _running.ToArray();
+                                    await Task.WhenAll(remaining).ConfigureAwait(false);
+                                    return;
                                 }
 
                                 next = taken.Value;
@@ -233,7 +241,7 @@ namespace System.Linq
                     Task signal;
                     lock (_lock)
                     {
-                        if (_sourceError != null)
+                        if (_sourceError != null || (_sourceCompleted && _queue.PendingCount == 0 && _scheduledRetries == 0))
                             return default;
                         signal = _signal.Task;
                     }
@@ -289,7 +297,10 @@ namespace System.Linq
                     // shutdown or lost leadership is not a failure: the key runs again when work resumes
                     outcome = "canceled";
                     lock (_lock)
-                        _queue.Retry(e);
+                    {
+                        if (!_queue.HasPending(e.Key))
+                            RetryUnsafe(e);
+                    }
                 }
                 catch (Exception ex) when (_options.IsConflictException(ex))
                 {
@@ -339,7 +350,11 @@ namespace System.Linq
                 if (result.IsDone)
                 {
                     lock (_lock)
+                    {
                         _attempts.Remove(e.Key);
+                        _scheduled.Remove(e.Key);
+                    }
+
                     return "done";
                 }
 
@@ -365,42 +380,55 @@ namespace System.Linq
 
             private void ScheduleRetry(ResourceEvent<TKey, TResource> e, TimeSpan delay)
             {
-                InformerDiagnostics.Requeues.Add(1, _nameTag);
-                long generation;
+                long token;
                 lock (_lock)
                 {
-                    _retryGeneration.TryGetValue(e.Key, out generation);
+                    // a change that arrived while the handler ran supersedes the retry: it runs next, with the latest state
+                    if (_queue.HasPending(e.Key))
+                        return;
+                    InformerDiagnostics.Requeues.Add(1, _nameTag);
                     if (delay <= TimeSpan.Zero)
                     {
-                        _queue.Retry(e);
+                        RetryUnsafe(e);
                         return;
                     }
 
+                    token = ++_nextToken;
+                    _scheduled[e.Key] = token;
                     _scheduledRetries++;
                 }
 
-                _ = Task.Delay(delay).ContinueWith(_ =>
+                _ = Task.Delay(delay, _timers.Token).ContinueWith(t =>
                 {
+                    if (t.IsCanceled)
+                        return;
                     lock (_lock)
                     {
                         _scheduledRetries--;
-                        _retryGeneration.TryGetValue(e.Key, out var current);
-                        if (current == generation)
-                            _queue.Retry(e);
+                        if (_scheduled.TryGetValue(e.Key, out var current) && current == token)
+                        {
+                            _scheduled.Remove(e.Key);
+                            RetryUnsafe(e);
+                        }
+
                         ReportDepthUnsafe();
                         SignalUnsafe();
                     }
                 }, TaskScheduler.Default);
             }
 
-            /// <summary>A new change to a key drops its pending retry (the change runs as soon as a worker is free).</summary>
-            private void SupersedeRetry(TKey key)
+            private void RetryUnsafe(ResourceEvent<TKey, TResource> e)
             {
-                if (_retryGeneration.TryGetValue(key, out var generation))
-                    _retryGeneration[key] = generation + 1;
-                else if (_scheduledRetries > 0)
-                    _retryGeneration[key] = 1;
+                if (!_queue.Retry(e))
+                {
+                    // the key is gone and its delete was already handled: forget its backoff
+                    _attempts.Remove(e.Key);
+                    _conflicts.Remove(e.Key);
+                }
             }
+
+            /// <summary>A new change to a key drops its pending retry (the change runs as soon as a worker is free).</summary>
+            private void SupersedeRetry(TKey key) => _scheduled.Remove(key);
 
             private void SignalUnsafe()
             {

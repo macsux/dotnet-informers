@@ -133,6 +133,21 @@ namespace Steeltoe.Informers.KubernetesBase.Tests.Fakes
             }
         }
 
+        /// <summary>Ends every open watch after writing <paramref name="partial" /> (e.g. half an event).</summary>
+        public void EndWatchesWith(string partial)
+        {
+            lock (_lock)
+            {
+                foreach (var watch in _watches)
+                {
+                    watch.Pipe.Writer.Write(Encoding.UTF8.GetBytes(partial));
+                    watch.Pipe.Writer.Complete();
+                }
+
+                _watches.Clear();
+            }
+        }
+
         /// <summary>Ends every open watch normally, like a server-side timeout, after sending a bookmark.</summary>
         public void EndWatches()
         {

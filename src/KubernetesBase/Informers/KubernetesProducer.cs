@@ -53,7 +53,7 @@ namespace Steeltoe.Informers.KubernetesBase
 
         public async Task RunAsync(IInformerSink<T> sink, ServerFilter filter, CancellationToken cancellationToken)
         {
-            var selection = await KubernetesSelection.ResolveAsync(_client, _resource, filter, cancellationToken).ConfigureAwait(false);
+            KubernetesSelection selection = null;
             string resourceVersion = null;
             var needList = true;
             var failures = 0;
@@ -62,6 +62,8 @@ namespace Steeltoe.Informers.KubernetesBase
                 cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
+                    // discovery (namespaced or not) is retried like list and watch
+                    selection ??= await KubernetesSelection.ResolveAsync(_client, _resource, filter, cancellationToken).ConfigureAwait(false);
                     if (needList)
                     {
                         var (items, listVersion) = await ListAsync(selection, cancellationToken).ConfigureAwait(false);
@@ -171,7 +173,18 @@ namespace Steeltoe.Informers.KubernetesBase
             {
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
-                using var document = JsonDocument.Parse(line);
+                JsonDocument document;
+                try
+                {
+                    document = JsonDocument.Parse(line);
+                }
+                catch (JsonException e)
+                {
+                    // a stream cut off mid-event: a broken connection, retried like one
+                    throw new IOException("The watch stream ended with an incomplete event.", e);
+                }
+
+                using var _ = document;
                 var root = document.RootElement;
                 var type = root.GetProperty("type").GetString();
                 var obj = root.GetProperty("object");

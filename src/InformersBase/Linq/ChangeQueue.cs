@@ -96,18 +96,20 @@ namespace System.Linq
         ///     Redelivers <paramref name="failed" /> with the key's latest state, unless a newer change is already pending (which then runs
         ///     instead).
         /// </summary>
-        public void Retry(ResourceEvent<TKey, TValue> failed)
+        /// <returns>False when there is nothing to retry (the key is gone and its delete was handled, or it came back since)</returns>
+        public bool Retry(ResourceEvent<TKey, TValue> failed)
         {
             var key = failed.Key;
             if (_pending.ContainsKey(key))
             {
                 MakeReady(key);
-                return;
+                return true;
             }
 
             var exists = _known.TryGetValue(key, out var value);
-            if (!exists && !failed.EventFlags.HasFlag(EventTypeFlags.Delete))
-                return; // gone and already reported
+            var failedDelete = failed.EventFlags.HasFlag(EventTypeFlags.Delete);
+            if (exists == failedDelete)
+                return false; // gone and already reported, or re-added since the failed delete (that add ran already)
             _pending[key] = new Pending
             {
                 Exists = exists,
@@ -115,6 +117,7 @@ namespace System.Linq
                 RetryFlags = failed.EventFlags & ~(EventTypeFlags.ResetStart | EventTypeFlags.ResetEnd | EventTypeFlags.ResetEmpty),
             };
             MakeReady(key);
+            return true;
         }
 
         /// <summary>Holds a key back (e.g. while a handler runs for it): changes are merged but it isn't ready until unblocked.</summary>

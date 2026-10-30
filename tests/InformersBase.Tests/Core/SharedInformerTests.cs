@@ -228,6 +228,37 @@ namespace Steeltoe.Informers.InformersBase.Tests.Core
         }
 
         [Fact]
+        public async Task AfterAProducerFailure_NewConsumersGetAFreshProducer()
+        {
+            var attempts = 0;
+            var informer = new SharedInformer<int, Item>(async (sink, filter, ct) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 1)
+                    throw new TimeoutException("first attempt fails");
+                sink.Replace(new[] { I(1, 1) });
+                await Task.Delay(Timeout.Infinite, ct);
+            }, Options());
+            await using var failed = informer.GetAsyncEnumerator();
+            await Assert.ThrowsAsync<InformerException>(async () => await failed.MoveNextAsync());
+            // the failed consumer is still attached, but a new one doesn't inherit its error
+            await using var fresh = informer.GetAsyncEnumerator();
+            Assert.True(await fresh.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(1, fresh.Current.Key);
+            Assert.Equal(2, attempts);
+        }
+
+        [Fact]
+        public async Task ClientSideFilteredEnumerator_DisposedBeforeFirstPull_ReleasesTheProducer()
+        {
+            var producer = new CountingProducer();
+            var informer = NewInformer(producer);
+            var e = informer.Where(x => x.Value >= 0).GetAsyncEnumerator();
+            Assert.Equal(1, informer.ActiveProducers);
+            await e.DisposeAsync();
+            Assert.Equal(0, informer.ActiveProducers);
+        }
+
+        [Fact]
         public async Task List_WithoutListFunction_ReadsOneReset()
         {
             var informer = NewInformer(new CountingProducer());
