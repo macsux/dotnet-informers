@@ -1,28 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
-    <PropertyGroup>
-        <TargetFramework>netstandard2.0</TargetFramework>
-        <LangVersion>8</LangVersion>
-    </PropertyGroup>
-
-
   <ItemGroup>
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="1.1.1" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="3.1.4" />
-    <PackageReference Include="Newtonsoft.Json" Version="12.0.3" />
-    <PackageReference Include="System.Linq.Async" Version="4.1.1" />
-    <PackageReference Include="System.Reactive" Version="4.3.2" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="System.Interactive.Async" />
   </ItemGroup>
-
-
-  <ItemGroup>
-    <Compile Remove="Linq2\**" />
-    <Compile Remove="Internal\**" />
-    <Compile Remove="Operators\Join.cs" />
-    <Compile Remove="DeltaQueue.cs" />
-    <Compile Remove="DeltaQueue2.cs" />
-    <Compile Remove="Linq\Operators\GroupBy.cs" />
-    <Compile Remove="Linq\Operators\Join.cs" />
-  </ItemGroup>
-
 </Project>

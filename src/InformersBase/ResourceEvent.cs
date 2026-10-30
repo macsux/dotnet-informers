@@ -25,7 +25,7 @@ namespace Steeltoe.Informers.InformersBase
 
         public ResourceEvent(EventTypeFlags eventFlags, TKey key = default, TResource value = default)
         {
-            if (eventFlags.HasFlag(EventTypeFlags.ResetEmpty) || eventFlags.HasFlag(EventTypeFlags.ResetEmpty))
+            if (eventFlags.HasFlag(EventTypeFlags.ResetEmpty))
             {
                 eventFlags |= EventTypeFlags.ResetStart | EventTypeFlags.ResetEnd;
             }
@@ -140,14 +140,26 @@ namespace Steeltoe.Informers.InformersBase
             Func<TSource, TResource> valueSelector,
             bool emitEmpty = false)
         {
-            var enumerator = ToReset(source.AsAsyncEnumerable(), keySelector, valueSelector, emitEmpty).GetAsyncEnumerator();
-            do
+            using var enumerator = source.GetEnumerator();
+            if (!enumerator.MoveNext())
             {
-                if (!enumerator.MoveNextAsync().Result)
-                    yield break;
-                yield return enumerator.Current;
-            } while (true);
+                if (emitEmpty)
+                    yield return new ResourceEvent<TKey, TResource>(EventTypeFlags.ResetEmpty, default);
+                yield break;
+            }
+
+            var current = enumerator.Current;
+            var flags = EventTypeFlags.ResetStart;
+            while (enumerator.MoveNext())
+            {
+                yield return valueSelector(current).ToResourceEvent(flags, keySelector(current));
+                flags = EventTypeFlags.Reset;
+                current = enumerator.Current;
+            }
+
+            yield return valueSelector(current).ToResourceEvent(flags | EventTypeFlags.ResetEnd, keySelector(current));
         }
+
         public static async IAsyncEnumerable<ResourceEvent<TKey, TResource>> ToReset<TSource, TKey, TResource>(this IAsyncEnumerable<TSource> source,
             Func<TSource, TKey> keySelector,
             Func<TSource, TResource> valueSelector,

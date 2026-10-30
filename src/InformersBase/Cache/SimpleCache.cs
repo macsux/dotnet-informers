@@ -14,17 +14,35 @@ namespace Steeltoe.Informers.InformersBase.Cache
 
         private readonly IDictionary<TKey, TResource> _items;
         protected readonly object _syncRoot = new object();
-        private readonly TaskCompletionSource<bool> _synchronized = new TaskCompletionSource<bool>();
-        private IDisposable _disposable;
-        private CancellationTokenRegistration _cancellationTokenRegistration;
-        public Task Synchronized => _synchronized.Task; 
-        
-        public SimpleCache(IInformable<TKey, TResource> source, CancellationToken cancellationToken)
+        private readonly TaskCompletionSource<bool> _synchronized = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenSource _feedCancellation;
+
+        /// <summary>Completes when the cache received its first complete state (a reset); faults if the source fails before that.</summary>
+        public Task Synchronized => _synchronized.Task;
+
+        /// <summary>Creates a cache kept up to date from <paramref name="source" /> until <paramref name="cancellationToken" /> is cancelled or the cache is disposed.</summary>
+        public SimpleCache(IInformable<TKey, TResource> source, CancellationToken cancellationToken) : this()
         {
-            _cancellationTokenRegistration = cancellationToken.Register(() => _disposable?.Dispose());
-            _disposable = source
-                .Into(this)
-                .Subscribe();
+            _feedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _ = FeedAsync(source, _feedCancellation.Token);
+        }
+
+        private async Task FeedAsync(IInformable<TKey, TResource> source, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await foreach (var _ in source.Into(this).WithCancellation(cancellationToken).ConfigureAwait(false))
+                {
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _synchronized.TrySetCanceled(cancellationToken);
+            }
+            catch (Exception e)
+            {
+                _synchronized.TrySetException(e);
+            }
         }
 
         public SimpleCache()
@@ -115,6 +133,8 @@ namespace Steeltoe.Informers.InformersBase.Cache
             lock (_syncRoot)
             {
                 _items.Clear();
+                foreach (var index in _indices.Values)
+                    index.Clear();
                 foreach (var item in newValues)
                 {
                     _items.Add(item.Key, item.Value);
@@ -290,7 +310,8 @@ namespace Steeltoe.Informers.InformersBase.Cache
 
         public virtual void Dispose()
         {
-            _disposable.Dispose();
+            _feedCancellation?.Cancel();
+            _feedCancellation?.Dispose();
         }
 
         public long Version { get; set; }

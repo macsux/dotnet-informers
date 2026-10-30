@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Steeltoe.Informers.InformersBase;
 using Steeltoe.Informers.InformersBase.Cache;
@@ -40,7 +41,7 @@ namespace System.Linq
         }
         public static IInformable<TKey, TResource> Do<TKey, TResource>(this IInformable<TKey, TResource> source, Func<ResourceEvent<TKey,TResource>,Task> onChange)
         {
-            var result = source.SelectAwait(async (ResourceEvent<TKey, TResource> x) =>
+            var result = source.Select(async (ResourceEvent<TKey, TResource> x, CancellationToken _) =>
             {
                 await onChange(x);
                 return x;

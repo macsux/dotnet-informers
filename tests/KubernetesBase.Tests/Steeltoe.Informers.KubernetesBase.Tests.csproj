@@ -1,30 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
-    <PropertyGroup>
-        <TargetFramework>netcoreapp3.1</TargetFramework>
-        <IsPackable>false</IsPackable>
-        <LangVersion>8</LangVersion>
-        <SignAssembly>true</SignAssembly>
-    </PropertyGroup>
-    <ItemGroup>
-        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.0.1" />
-        <PackageReference Include="System.Interactive.Async" Version="4.0.0" />
-        <PackageReference Include="Microsoft.Extensions.Logging" Version="2.2.0" />
-        <PackageReference Include="System.Reactive" Version="4.3.2" />
-        <PackageReference Include="Nito.AsyncEx" Version="5.0.0" />
-        <PackageReference Include="FluentAssertions" Version="5.10.3" />
-        <PackageReference Include="NSubstitute" Version="4.2.1" />
-        <PackageReference Include="Microsoft.Reactive.Testing" Version="4.3.2" />
-        <PackageReference Include="WireMock.Net" Version="1.2.1" />
-        <PackageReference Include="xunit" Version="2.4.1" />
-        <PackageReference Include="xunit.runner.visualstudio" Version="2.4.1" />
-        <PackageReference Include="coverlet.msbuild" Version="2.9.0">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-        </PackageReference>
-    </ItemGroup>
-    <ItemGroup>
-      <ProjectReference Include="..\..\src\KubernetesBase\Steeltoe.Informers.KubernetesBase.csproj" />
-      <ProjectReference Include="..\InformersBase.Tests\Steeltoe.Informers.InformersBase.Tests.csproj" />
-    </ItemGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <SignAssembly>true</SignAssembly>
+    <!-- the informer tests drive enumerators with their own cancellation and timeouts -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AwesomeAssertions" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
+    <PackageReference Include="Nito.AsyncEx" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="System.Interactive.Async" />
+    <PackageReference Include="WireMock.Net" />
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KubernetesBase\Steeltoe.Informers.KubernetesBase.csproj" />
+    <ProjectReference Include="..\InformersBase.Tests\Steeltoe.Informers.InformersBase.Tests.csproj" />
+  </ItemGroup>
 </Project>

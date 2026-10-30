@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using FluentAssertions;
+using AwesomeAssertions;
 using Steeltoe.Informers.InformersBase.Cache;
 using Steeltoe.Informers.InformersBase.Tests.Utils;
 using Xunit;

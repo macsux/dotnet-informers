@@ -1,201 +1,166 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
-using System.Reactive.Linq;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using k8s;
 using k8s.Models;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Rest.TransientFaultHandling;
 using Steeltoe.Informers.InformersBase;
-using Steeltoe.Informers.InformersBase.FaultTolerance;
 using RetryPolicy = Steeltoe.Informers.InformersBase.FaultTolerance.RetryPolicy;
 
 namespace Steeltoe.Informers.KubernetesBase
 {
     /// <summary>
-    ///     An implementation of Kubernetes informer that talks to Kubernetes API Server
+    ///     A Kubernetes informer: a <see cref="SharedInformer{TKey,TResource}" /> fed by a <see cref="KubernetesProducer{T}" /> per distinct
+    ///     server filter (namespace, label and field selectors).
     /// </summary>
     /// <typeparam name="TResource">The type of Kubernetes resource</typeparam>
-    internal class KubernetesInformer<TResource> : IKubernetesInformer<TResource> where TResource : IKubernetesObject<V1ObjectMeta>
+    internal sealed class KubernetesInformer<TResource> : IKubernetesInformer<TResource>, ISharedSource<string, TResource>
+        where TResource : IKubernetesObject<V1ObjectMeta>
     {
-        private readonly IKubernetesGenericClient _kubernetes;
-        private readonly Func<bool> _restartOnCompletion;
-        private readonly ILogger<KubernetesInformer<TResource>> _logger;
-        private readonly RetryPolicy _retryPolicy;
+        private readonly SharedInformer<string, TResource> _informer;
+        private readonly KubernetesProducer<TResource> _producer;
+        private readonly IKubernetesResourceClient _client;
 
-        public KubernetesInformer(IKubernetesGenericClient kubernetes, RetryPolicy retryPolicy = null, ILogger<KubernetesInformer<TResource>> logger = null) : this(kubernetes, retryPolicy, () => true, logger)
+        public KubernetesInformer(
+            IKubernetesResourceClient client,
+            GroupVersionResource resource,
+            PayloadShape shape,
+            Func<JsonElement, TResource> deserialize,
+            KubernetesInformerRegistration<TResource> registration = null,
+            RetryPolicy retryPolicy = null,
+            ILogger logger = null)
         {
-            
-        }
-
-        public KubernetesInformer(IKubernetesGenericClient kubernetes, RetryPolicy retryPolicy, Func<bool> restartOnCompletion, ILogger<KubernetesInformer<TResource>> logger = null)
-        {
-            _kubernetes = kubernetes;
-            _restartOnCompletion = restartOnCompletion;
-            _logger = logger ?? NullLogger<KubernetesInformer<TResource>>.Instance;
-            _retryPolicy = retryPolicy ?? DefaultRetryPolicy;
-            
-        }
-
-        private static RetryPolicy DefaultRetryPolicy => new RetryPolicy(
-            (exception, retryAttempt) => exception.IsTransient(),
-            retryAttempt => TimeSpan.FromSeconds(Math.Min(Math.Pow(2, retryAttempt), 30)));
-
-        public IAsyncEnumerable<TResource> List(CancellationToken cancellationToken = default)
-        {
-            return List(KubernetesInformerOptions.Default, cancellationToken);
-        }
-
-        public IAsyncEnumerable<TResource> List(KubernetesInformerOptions options, CancellationToken cancellationToken = default)
-        {
-            return new KubernetesInformerEmitter(this, options).List(cancellationToken);
-        }
-
-        public IInformable<string, TResource> ListWatch() => ListWatch(KubernetesInformerOptions.Default);
-
-        public IInformable<string, TResource> ListWatch(KubernetesInformerOptions options)
-        {
-            return new KubernetesInformerEmitter(this, options).ListWatch(CancellationToken.None);
-        }
-
-        private class KubernetesInformerEmitter
-        {
-            private readonly KubernetesInformerOptions _options;
-            private readonly KubernetesInformer<TResource> _parent;
-            private string _resourceVersion;
-
-            public KubernetesInformerEmitter(KubernetesInformer<TResource> parent, KubernetesInformerOptions options)
+            KubernetesConflictDetection.EnsureRegistered();
+            _client = client;
+            Resource = resource;
+            Shape = shape;
+            _producer = new KubernetesProducer<TResource>(client, resource, shape, deserialize, retryPolicy, logger);
+            var options = new SharedInformerOptions<string, TResource>
             {
-                _parent = parent;
-                _options = options;
+                KeySelector = x => x.ObjectKey(),
+                KeyComparer = StringComparer.Ordinal,
+                ChangeComparer = ResourceVersionComparer<TResource>.Instance,
+                FilterTranslator = new KubernetesFilterTranslator<TResource>(),
+                Transform = registration?.TransformFunction,
+                Name = resource.ToString(),
+            };
+            if (registration != null)
+            {
+                foreach (var index in registration.Indexes)
+                    options.Indexes[index.Key] = index.Value;
+                if (registration.MutationDetection)
+                    options.MutationFingerprint = x => KubernetesJson.Serialize(x);
             }
 
-            public async IAsyncEnumerable<TResource> List([EnumeratorCancellation] CancellationToken cancellationToken)
+            _informer = new SharedInformer<string, TResource>(_producer.RunAsync, options, ListOnce);
+        }
+
+        /// <summary>Creates a typed informer for <typeparamref name="TResource" /> (full payload).</summary>
+        internal KubernetesInformer(IKubernetesResourceClient client, RetryPolicy retryPolicy = null, ILogger logger = null, KubernetesInformerRegistration<TResource> registration = null)
+            : this(client, GroupVersionResource.For<TResource>(), PayloadShape.Full, TypedDeserializer, registration, retryPolicy, logger)
+        {
+        }
+
+        internal static TResource TypedDeserializer(JsonElement element) => KubernetesJson.Deserialize<TResource>(element.GetRawText());
+
+        public GroupVersionResource Resource { get; }
+        public PayloadShape Shape { get; }
+
+        internal KubernetesProducer<TResource> Producer => _producer;
+
+        /// <summary>Number of list/watch connections currently open for this informer (one per distinct server filter in use).</summary>
+        public int ActiveProducers => _informer.ActiveProducers;
+
+        public bool IsSynced => _informer.IsSynced;
+
+        public Task WaitForSyncAsync(CancellationToken cancellationToken = default) => _informer.WaitForSyncAsync(cancellationToken);
+
+        public IInformer<string, TResource> Where(Expression<Func<TResource, bool>> predicate) => _informer.Where(predicate);
+
+        public IInformable<string, TResource> ListWatch() => _informer;
+
+        public IInformer<string, TResource> ListWatch(KubernetesInformerOptions options) => _informer.WithServerFilter(ToServerFilter(options));
+
+        public IAsyncEnumerable<TResource> List(CancellationToken cancellationToken = default) => _informer.List(cancellationToken);
+
+        public IAsyncEnumerable<TResource> List(KubernetesInformerOptions options, CancellationToken cancellationToken = default) =>
+            ListOnce(ToServerFilter(options), cancellationToken);
+
+        public IAsyncEnumerator<ResourceEvent<string, TResource>> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
+            _informer.GetAsyncEnumerator(cancellationToken);
+
+        SharedSubscription<string, TResource> ISharedSource<string, TResource>.Subscribe(CancellationToken cancellationToken) =>
+            ((ISharedSource<string, TResource>)_informer).Subscribe(cancellationToken);
+
+        private async IAsyncEnumerable<TResource> ListOnce(ServerFilter filter, [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            var selection = await KubernetesSelection.ResolveAsync(_client, Resource, filter, cancellationToken).ConfigureAwait(false);
+            var (items, _) = await _producer.ListAsync(selection, cancellationToken).ConfigureAwait(false);
+            foreach (var item in items)
             {
-                var response = await _parent._retryPolicy.ExecuteAsync(async () =>
-                {
-                    var httpResponse = await _parent._kubernetes.ListWithHttpMessagesAsync<TResource>(
-                        _options.Namespace,
-                        resourceVersion: _resourceVersion,
-                        labelSelector: _options.LabelSelector,
-                        cancellationToken: cancellationToken).ConfigureAwait(false);
-                    if (!httpResponse.Response.IsSuccessStatusCode)
-                    {
-                        throw new HttpRequestWithStatusException("Web server replied with error code") {StatusCode = httpResponse.Response.StatusCode};
-                    }
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return item;
+            }
+        }
 
-                    return httpResponse;
-                });
+        /// <summary>Explicit options are the same server filter a predicate would push down, so they share producers with predicates.</summary>
+        internal static ServerFilter ToServerFilter(KubernetesInformerOptions options)
+        {
+            var terms = new List<ServerFilterTerm>();
+            if (!string.IsNullOrEmpty(options?.Namespace))
+                terms.Add(new ServerFilterTerm(KubernetesFilterTranslator.Namespace, options.Namespace));
+            if (!string.IsNullOrEmpty(options?.LabelSelector))
+                terms.AddRange(SplitSelector(options.LabelSelector).Select(x => new ServerFilterTerm(KubernetesFilterTranslator.Label, x)));
+            return ServerFilter.Create(terms);
+        }
 
-                var listKubernetesObject = response.Body;
-                _resourceVersion = listKubernetesObject.Metadata.ResourceVersion;
-                var items = listKubernetesObject.Items ?? new List<TResource>();
-                foreach (var item in items)
+        /// <summary>Splits a label selector into its requirements (commas inside <c>in (...)</c> sets don't split).</summary>
+        internal static IEnumerable<string> SplitSelector(string selector)
+        {
+            var depth = 0;
+            var start = 0;
+            for (var i = 0; i < selector.Length; i++)
+            {
+                switch (selector[i])
                 {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
+                    case '(':
+                        depth++;
                         break;
-                    }
-                    yield return item;
+                    case ')':
+                        depth--;
+                        break;
+                    case ',' when depth == 0:
+                        var part = selector.Substring(start, i - start).Trim();
+                        if (part.Length > 0)
+                            yield return part;
+                        start = i + 1;
+                        break;
                 }
-               
             }
-            private IObservable<ResourceEvent<string, TResource>> List() =>
-                Observable.Create<ResourceEvent<string, TResource>>(async (observer, cancellationToken) =>
-                {
-                    await foreach (var item in List(cancellationToken).ToReset(x => x.Metadata.Name, x => x, true, cancellationToken))
-                    {
-                        observer.OnNext(item);
-                    }
-                });
 
-            public IInformable<string, TResource> ListWatch([EnumeratorCancellation] CancellationToken cancellationToken)
-            {
-                return ListWatch().ToInformable();
-            }
-            private IObservable<ResourceEvent<string, TResource>> ListWatch()
-            {
-                return List(CancellationToken.None)
-                    .ToReset(x => x.Metadata.Name, x => x, true)
-                    .ToObservable()
-                    .Concat(Watch());
-               
-            }
-            
-            private IObservable<ResourceEvent<string, TResource>> Watch()
-            {
-                
-                return Observable.Create<ResourceEvent<string, TResource>>(async (observer, cancellationToken) =>
-                    {
-                        var result = await _parent._kubernetes.ListWithHttpMessagesAsync<TResource>(
-                            _options.Namespace,
-                            watch: true,
-                            allowWatchBookmarks: true,
-                            resourceVersion: _resourceVersion,
-                            labelSelector: _options.LabelSelector,
-                            cancellationToken: cancellationToken
-                        ).ConfigureAwait(false);
-                        if (!result.Response.IsSuccessStatusCode)
-                        {
-                            throw new HttpRequestWithStatusException("Web server replied with error code") { StatusCode = result.Response.StatusCode };
-                        }
-                        return Task.FromResult(result)
-                            .Watch()
-                            .SelectMany(x => // this is not a one to one mapping as some events cause side effects but don't propagate, so we need SelectMany
-                            {
-                                if (x.Object is IMetadata<V1ObjectMeta> status && status.Metadata.ResourceVersion != null)
-                                {
-                                    _resourceVersion = status.Metadata.ResourceVersion;
-                                }
-                                switch (x.Type)
-                                {
-                                    case WatchEventType.Added:
-                                        return new[] { x.Object.ToResourceEvent(EventTypeFlags.Add) };
-                                    case WatchEventType.Deleted:
-                                        return new[] { x.Object.ToResourceEvent(EventTypeFlags.Delete) };
-                                    case WatchEventType.Modified:
-                                        return new[] { x.Object.ToResourceEvent(EventTypeFlags.Modify) };
-                                    case WatchEventType.Bookmark:
-                                        // we're just updating resource version
-                                        break;
-                                    case WatchEventType.Error:
-                                    default:
-                                        if (x.Object is V1Status error)
-                                        {
-                                            throw new KubernetesException(error);
-                                        }
-
-                                        throw new KubernetesException($"Received unknown error in watch: {x.Object}");
-                                }
-
-                                return Enumerable.Empty<ResourceEvent<string, TResource>>();
-                            })
-                            .Select(x => x)
-                            // watch should never "complete" on it's own unless there's a critical exception, except in testing scenarios
-                            .Concat(_parent._restartOnCompletion() ? Observable.Defer(Watch) : Observable.Empty<ResourceEvent<string, TResource>>())
-                            .Subscribe(observer);
-                    })
-                    .Catch<ResourceEvent<string, TResource>, Exception>(exception =>
-                    {
-                        _parent._logger.LogError(exception.Message, exception);
-                        // handle case when we tried rewatching by specifying resource version to resume after disconnect,
-                        // but resource is too stale - should try to resubscribe from scratch
-                        if (exception is HttpRequestWithStatusException httpException && httpException.StatusCode == HttpStatusCode.Gone && _resourceVersion != null)
-                        {
-                            // we tried resuming but failed, restart from scratch
-                            _resourceVersion = null;
-                            return ListWatch();
-                        }
-
-                        return Observable.Throw<ResourceEvent<string, TResource>>(exception);
-                    })
-                    .WithRetryPolicy(_parent._retryPolicy);
-            }
+            var last = selector.Substring(start).Trim();
+            if (last.Length > 0)
+                yield return last;
         }
+    }
+
+    /// <summary>The Kubernetes no-op check: two versions of an object with the same <c>resourceVersion</c> are the same content.</summary>
+    internal sealed class ResourceVersionComparer<T> : IEqualityComparer<T> where T : IMetadata<V1ObjectMeta>
+    {
+        public static ResourceVersionComparer<T> Instance { get; } = new ResourceVersionComparer<T>();
+
+        public bool Equals(T x, T y)
+        {
+            var a = x?.Metadata?.ResourceVersion;
+            var b = y?.Metadata?.ResourceVersion;
+            return a != null && b != null && a == b && x.Metadata.Uid == y.Metadata.Uid;
+        }
+
+        public int GetHashCode(T obj) => obj?.Metadata?.ResourceVersion?.GetHashCode() ?? 0;
     }
 }

@@ -1,19 +1,18 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Threading;
+using System.Text;
 using k8s;
+using k8s.Autorest;
 using k8s.Models;
-using Microsoft.Rest;
-using Newtonsoft.Json;
-using Steeltoe.Informers.InformersBase.Tests.Utils;
 
 namespace Steeltoe.Informers.KubernetesBase.Tests
 {
     public static class KubernetesTestExtensions
     {
+        public static string ToKubernetesJson(this object obj) => KubernetesJson.Serialize(obj);
+
         public static Watcher<T>.WatchEvent ToWatchEvent<T>(this T obj, WatchEventType eventType)
         {
             return new Watcher<T>.WatchEvent { Type = eventType, Object = obj };
@@ -21,14 +20,14 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
 
         public static HttpOperationResponse<KubernetesList<TV>> ToHttpOperationResponse<TL, TV>(this TL obj) where TL : IItems<TV> where TV : IKubernetesObject
         {
+            var json = obj.ToKubernetesJson();
             return new HttpOperationResponse<KubernetesList<TV>>()
             {
-                Body = JsonConvert.DeserializeObject<KubernetesList<TV>>(obj.ToJson()),
+                Body = KubernetesJson.Deserialize<KubernetesList<TV>>(json),
                 Response = new HttpResponseMessage()
                 {
                     StatusCode = HttpStatusCode.OK,
-                    Content = new StringContent(obj.ToJson())
-
+                    Content = new StringContent(json, Encoding.UTF8, "application/json")
                 }
             };
         }
@@ -40,19 +39,15 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
 
         public static HttpOperationResponse<KubernetesList<T>> ToHttpOperationResponse<T>(this IEnumerable<Watcher<T>.WatchEvent> obj) where T : IKubernetesObject
         {
-            var stringContent = new StringContent(string.Join("\n", obj.Select(x => x.ToJson())));
-            var contentType = Type.GetType("k8s.WatcherDelegatingHandler+LineSeparatedHttpContent, KubernetesClient, Version=2.0.0.0, Culture=neutral, PublicKeyToken=a0f90e8c9af122de");
-            dynamic lineContent = Activator.CreateInstance(contentType, stringContent, CancellationToken.None);
-            lineContent.LoadIntoBufferAsync().Wait();
-            var httpResponse = new HttpOperationResponse<KubernetesList<T>>()
+            // watch responses are newline delimited JSON events
+            return new HttpOperationResponse<KubernetesList<T>>()
             {
                 Response = new HttpResponseMessage()
                 {
                     StatusCode = HttpStatusCode.OK,
-                    Content = lineContent
+                    Content = new StringContent(string.Join("\n", obj.Select(x => x.ToKubernetesJson())), Encoding.UTF8, "application/json")
                 }
             };
-            return httpResponse;
         }
     }
 }

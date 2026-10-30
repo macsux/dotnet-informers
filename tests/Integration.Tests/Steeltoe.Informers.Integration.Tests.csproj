@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- these tests drive informers with their own cancellation and timeouts -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AwesomeAssertions" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
+    <PackageReference Include="System.Interactive.Async" />
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\samples\Controllers\Steeltoe.Informers.Samples.Controllers.csproj" />
+    <!-- built so the leader election test can start replicas of the sample host -->
+    <ProjectReference Include="..\..\samples\informers\informers.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

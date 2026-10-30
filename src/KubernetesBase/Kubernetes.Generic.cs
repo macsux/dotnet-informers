@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -11,9 +12,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using k8s;
 using k8s.Models;
-using Microsoft.Rest;
-using Microsoft.Rest.Serialization;
-using Newtonsoft.Json;
+using k8s.Authentication;
+using k8s.Autorest;
 using Steeltoe.Informers.InformersBase;
 using static System.Net.HttpStatusCode;
 
@@ -21,15 +21,26 @@ namespace Steeltoe.Informers.KubernetesBase
 {
     public class KubernetesGenericClient : IKubernetesGenericClient
     {
-        private readonly HttpClient _client;
-        private readonly JsonSerializerSettings _serializationSettings;
-        private readonly JsonSerializerSettings _deserializationSettings;
+        private static readonly MethodInfo DeserializeMethod = typeof(KubernetesJson)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(x => x.Name == nameof(KubernetesJson.Deserialize) && x.GetParameters().First().ParameterType == typeof(string));
 
-        public KubernetesGenericClient(HttpClient client, JsonSerializerSettings serializationSettings, JsonSerializerSettings deserializationSettings)
+        private readonly HttpClient _client;
+        private readonly Uri _baseUri;
+        private readonly ServiceClientCredentials _credentials;
+
+        /// <summary>
+        ///     Creates a generic client that reuses the HTTP pipeline, base address and credentials of an existing <see cref="k8s.Kubernetes" /> client
+        /// </summary>
+        public KubernetesGenericClient(k8s.Kubernetes kubernetes) : this(kubernetes.HttpClient, kubernetes.BaseUri, kubernetes.Credentials)
+        {
+        }
+
+        public KubernetesGenericClient(HttpClient client, Uri baseUri, ServiceClientCredentials credentials = null)
         {
             _client = client;
-            _serializationSettings = serializationSettings;
-            _deserializationSettings = deserializationSettings;
+            _baseUri = baseUri;
+            _credentials = credentials;
         }
 
         public async Task<HttpOperationResponse<KubernetesList<T>>> ListWithHttpMessagesAsync<T>(
@@ -409,15 +420,131 @@ namespace Steeltoe.Informers.KubernetesBase
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
-        private object DeserializeObject(Type type, string json)
+        private string BuildUrl(GroupVersionResource resource, string namespaceParameter, string name = null, bool statusOnly = false)
         {
-            var jsonSerializer = JsonSerializer.Create(_deserializationSettings);
-            jsonSerializer.CheckAdditionalContent = true;
-            using (var jsonTextReader = new JsonTextReader(new StringReader(json)))
+            var segments = new List<string> { (_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/') };
+            if (string.IsNullOrEmpty(resource.Group))
             {
-                return jsonSerializer.Deserialize(jsonTextReader, type);
+                segments.Add("api");
             }
+            else
+            {
+                segments.Add("apis");
+                segments.Add(resource.Group);
+            }
+
+            segments.Add(resource.Version);
+            if (!string.IsNullOrEmpty(namespaceParameter))
+            {
+                segments.Add("namespaces");
+                segments.Add(Uri.EscapeDataString(namespaceParameter));
+            }
+
+            segments.Add(resource.Resource);
+            if (!string.IsNullOrEmpty(name))
+            {
+                segments.Add(Uri.EscapeDataString(name));
+            }
+
+            if (statusOnly)
+            {
+                segments.Add("status");
+            }
+
+            return string.Join("/", segments);
         }
+
+        /// <inheritdoc />
+        async Task<HttpResponseMessage> IKubernetesResourceClient.SendListAsync(GroupVersionResource resource, string namespaceParameter, KubernetesListRequest request, CancellationToken cancellationToken)
+        {
+            if (resource == null)
+            {
+                throw new ArgumentNullException(nameof(resource));
+            }
+
+            request ??= new KubernetesListRequest();
+            var sb = new StringBuilder();
+            AddQueryParameter(sb, "allowWatchBookmarks", request.AllowWatchBookmarks);
+            AddQueryParameter(sb, "continue", request.Continue);
+            AddQueryParameter(sb, "fieldSelector", request.FieldSelector);
+            AddQueryParameter(sb, "labelSelector", request.LabelSelector);
+            AddQueryParameter(sb, "limit", request.Limit);
+            AddQueryParameter(sb, "resourceVersion", request.ResourceVersion);
+            AddQueryParameter(sb, "timeoutSeconds", request.TimeoutSeconds);
+            AddQueryParameter(sb, "watch", request.Watch ? true : (bool?)null);
+            var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(BuildUrl(resource, namespaceParameter) + sb));
+            if (!string.IsNullOrEmpty(request.Accept))
+            {
+                httpRequest.Headers.TryAddWithoutValidation("Accept", request.Accept);
+            }
+
+            if (_credentials != null)
+            {
+                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            }
+
+            var httpResponse = await _client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (!httpResponse.IsSuccessStatusCode)
+            {
+                var content = httpResponse.Content != null ? await httpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false) : string.Empty;
+                var ex = new HttpOperationException($"Operation returned an invalid status code '{httpResponse.StatusCode}'")
+                {
+                    Request = new HttpRequestMessageWrapper(httpRequest, null),
+                    Response = new HttpResponseMessageWrapper(httpResponse, content),
+                };
+                httpRequest.Dispose();
+                httpResponse.Dispose();
+                throw ex;
+            }
+
+            return httpResponse;
+        }
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<GroupVersionResource, bool> _namespaced = new System.Collections.Concurrent.ConcurrentDictionary<GroupVersionResource, bool>();
+
+        /// <inheritdoc />
+        async Task<bool> IKubernetesResourceClient.IsNamespacedAsync(GroupVersionResource resource, CancellationToken cancellationToken)
+        {
+            if (_namespaced.TryGetValue(resource, out var namespaced))
+            {
+                return namespaced;
+            }
+
+            var url = $"{(_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/')}/{(string.IsNullOrEmpty(resource.Group) ? "api" : "apis/" + resource.Group)}/{resource.Version}";
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
+            if (_credentials != null)
+            {
+                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            }
+
+            using var httpResponse = await _client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
+            var content = await httpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!httpResponse.IsSuccessStatusCode)
+            {
+                throw new HttpOperationException($"Discovery of {resource} returned '{httpResponse.StatusCode}'")
+                {
+                    Request = new HttpRequestMessageWrapper(httpRequest, null),
+                    Response = new HttpResponseMessageWrapper(httpResponse, content),
+                };
+            }
+
+            var resources = KubernetesJson.Deserialize<V1APIResourceList>(content);
+            var match = resources.Resources?.FirstOrDefault(x => x.Name == resource.Resource)
+                ?? throw new InvalidOperationException($"The API server doesn't serve {resource}");
+            _namespaced[resource] = match.Namespaced;
+            return match.Namespaced;
+        }
+
+        private static object DeserializeObject(Type type, string json) =>
+            DeserializeMethod.MakeGenericMethod(type).Invoke(null, new object[] { json, null });
+
+        private static string GetPatchContentType(V1Patch patch) => patch.Type switch
+        {
+            V1Patch.PatchType.MergePatch => "application/merge-patch+json",
+            V1Patch.PatchType.StrategicMergePatch => "application/strategic-merge-patch+json",
+            V1Patch.PatchType.ApplyPatch => "application/apply-patch+yaml",
+            _ => "application/json-patch+json",
+        };
 
         private async Task<HttpOperationResponse> SendStandardRequest(
             Type resourceType,
@@ -462,7 +589,6 @@ namespace Steeltoe.Informers.KubernetesBase
             {
                 validResponseCodes = new List<HttpStatusCode>();
                 validResponseCodes.Add(OK);
-                validResponseCodes.Add(Unauthorized);
                 if (httpMethod.In(HttpMethod.Post, HttpMethod.Put))
                 {
                     validResponseCodes.Add(Created);
@@ -474,78 +600,7 @@ namespace Steeltoe.Informers.KubernetesBase
                 }
             }
 
-            // Tracing
-            var parameters = new Dictionary<string, object>
-            {
-                { nameof(resourceType), resourceType },
-                { nameof(httpMethod), httpMethod },
-                { nameof(validResponseCodes), validResponseCodes },
-                { nameof(responseType), responseType },
-                { nameof(body), body },
-                { nameof(namespaceParameter), namespaceParameter },
-                { nameof(name), name },
-                { nameof(statusOnly), statusOnly },
-                { nameof(export), export },
-                { nameof(exact), exact },
-                { nameof(gracePeriod), gracePeriod },
-                { nameof(orphanDependents), orphanDependents },
-                { nameof(propagationPolicy), propagationPolicy },
-                { nameof(dryRun), dryRun },
-                { nameof(fieldManager), fieldManager },
-                { nameof(force), force },
-                { nameof(allowWatchBookmarks), allowWatchBookmarks },
-                { nameof(continueParameter), continueParameter },
-                { nameof(fieldSelector), fieldSelector },
-                { nameof(labelSelector), labelSelector },
-                { nameof(limit), limit },
-                { nameof(resourceVersion), resourceVersion },
-                { nameof(timeout), timeout },
-                { nameof(watch), watch },
-                { nameof(isPretty), isPretty },
-                { nameof(customHeaders), customHeaders },
-                { nameof(cancellationToken), cancellationToken },
-            };
-            foreach (var parameterName in parameters.Where(x => x.Value == null).Select(x => x.Key).ToList())
-            {
-                parameters.Remove(parameterName);
-            }
-
-            var invocationId = AddTracing(parameters);
-            var shouldTrace = invocationId != null;
-
-            var entityAttribute = resourceType.GetKubernetesTypeMetadata();
-            var isLegacy = string.IsNullOrEmpty(entityAttribute.Group);
-            var segments = new List<string> { _client.BaseAddress.AbsoluteUri.Trim('/') };
-            if (isLegacy)
-            {
-                segments.Add("api");
-            }
-            else
-            {
-                segments.Add("apis");
-                segments.Add(entityAttribute.Group);
-            }
-
-            segments.Add(entityAttribute.ApiVersion);
-
-            if (!string.IsNullOrEmpty(namespaceParameter))
-            {
-                segments.Add("namespaces");
-                segments.Add(Uri.EscapeDataString(namespaceParameter));
-            }
-
-            segments.Add(entityAttribute.PluralName);
-            if (!string.IsNullOrEmpty(name))
-            {
-                segments.Add(Uri.EscapeDataString(name));
-            }
-
-            if (statusOnly.GetValueOrDefault())
-            {
-                segments.Add("status");
-            }
-
-            var url = string.Join("/", segments);
+            var url = BuildUrl(GroupVersionResource.For(resourceType), namespaceParameter, name, statusOnly.GetValueOrDefault());
 
             var sb = new StringBuilder();
             AddQueryParameter(sb, "export", export);
@@ -583,33 +638,23 @@ namespace Steeltoe.Informers.KubernetesBase
             string requestContent = null;
             if (body != null)
             {
-                (body as IValidate)?.Validate();
-                requestContent = SafeJsonConvert.SerializeObject(body, _serializationSettings);
+                requestContent = KubernetesJson.Serialize(body);
                 httpRequest.Content = new StringContent(requestContent, Encoding.UTF8);
-                if (httpMethod.Method != "PATCH")
-                {
-                    httpRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json; charset=utf-8");
-                }
-                else
-                {
-                    httpRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json-patch+json; charset=utf-8");
-                }
+                var contentType = body is V1Patch patch ? GetPatchContentType(patch) : "application/json";
+                httpRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse($"{contentType}; charset=utf-8");
             }
 
             
 
             // Send Request
-            if (shouldTrace)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_credentials != null)
             {
-                ServiceClientTracing.SendRequest(invocationId, httpRequest);
+                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            var httpResponse = await _client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            if (shouldTrace)
-            {
-                ServiceClientTracing.ReceiveResponse(invocationId, httpResponse);
-            }
+            // headers-only so watch responses can be streamed instead of buffered
+            var httpResponse = await _client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
 
             var statusCode = httpResponse.StatusCode;
             cancellationToken.ThrowIfCancellationRequested();
@@ -629,10 +674,6 @@ namespace Steeltoe.Informers.KubernetesBase
 
                 ex.Request = new HttpRequestMessageWrapper(httpRequest, requestContent);
                 ex.Response = new HttpResponseMessageWrapper(httpResponse, responseContent);
-                if (shouldTrace)
-                {
-                    ServiceClientTracing.Error(invocationId, ex);
-                }
 
                 httpRequest.Dispose();
                 httpResponse?.Dispose();
@@ -647,6 +688,12 @@ namespace Steeltoe.Informers.KubernetesBase
             var result = (HttpOperationResponse)Activator.CreateInstance(typeof(HttpOperationResponse<>).MakeGenericType(responseType ?? resourceType));
             result.Request = httpRequest;
             result.Response = httpResponse;
+            if (watch == true)
+            {
+                // body is a stream of watch events consumed by the caller
+                return result;
+            }
+
             responseContent = await httpResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
             if (!string.IsNullOrEmpty(responseContent))
             {
@@ -654,38 +701,18 @@ namespace Steeltoe.Informers.KubernetesBase
                 {
                     result.GetType().GetProperty("Body").SetValue(result, DeserializeObject(responseType, responseContent));
                 }
-                catch (JsonException ex)
+                catch (TargetInvocationException ex) when (ex.InnerException is System.Text.Json.JsonException)
                 {
                     httpRequest.Dispose();
                     httpResponse?.Dispose();
 
-                    throw new SerializationException("Unable to deserialize the response.", responseContent, ex);
+                    throw new HttpOperationException("Unable to deserialize the response.", ex.InnerException);
                 }
-            }
-
-            if (shouldTrace)
-            {
-                ServiceClientTracing.Exit(invocationId, result);
             }
 
             return result;
         }
 
-        private string AddTracing(IDictionary<string, object> parameters)
-        {
-            var stackTrace = new StackTrace();
-            var callingMethodName = stackTrace.GetFrame(1).GetMethod().Name;
-            var shouldTrace = ServiceClientTracing.IsEnabled;
-            string invocationId = null;
-            if (shouldTrace)
-            {
-                invocationId = ServiceClientTracing.NextInvocationId.ToString();
-                ServiceClientTracing.Enter(invocationId, this, callingMethodName, parameters);
-            }
-
-            return invocationId;
-        }
-        
         private static void AddQueryParameter(StringBuilder sb, string key, long? value, bool includeIfDefault = false) =>
             AddQueryParameter(sb, key, value?.ToString(), includeIfDefault);
 

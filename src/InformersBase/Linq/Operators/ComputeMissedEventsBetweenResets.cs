@@ -1,78 +1,89 @@
 using System.Collections.Generic;
-using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Steeltoe.Informers.InformersBase;
-using Steeltoe.Informers.InformersBase.Cache;
 
 namespace System.Linq
 {
     public static partial class Informable
     {
+        /// <summary>
+        ///     For sources that send a complete reset after reconnecting: the first reset passes through, and every later reset is turned into
+        ///     computed <c>Delete</c>/<c>Add</c>/<c>Modify</c> events for the differences from what the consumer already has, flagged
+        ///     <see cref="EventTypeFlags.Computed" />. With a <paramref name="comparer" />, unchanged objects send nothing; without one, every
+        ///     surviving object arrives as a computed <c>Modify</c>.
+        /// </summary>
         public static IInformable<TKey, TResource> ComputeMissedEventsBetweenResets<TKey, TResource>(this IInformable<TKey, TResource> source, IEqualityComparer<TResource> comparer = null)
         {
-            var cache = new SimpleCache<TKey, TResource>();
-            var cacheSynchronized = false;
-            return source
-                .WithResets(resetBuffer =>
+            if (source == null)
+                throw Error.ArgumentNull(nameof(source));
+            return Create<TKey, TResource>(cancellationToken => ComputeMissedIterator(source, comparer, cancellationToken));
+        }
+
+        private static async IAsyncEnumerator<ResourceEvent<TKey, TResource>> ComputeMissedIterator<TKey, TResource>(
+            IInformable<TKey, TResource> source,
+            IEqualityComparer<TResource> comparer,
+            CancellationToken cancellationToken)
+        {
+            Dictionary<TKey, TResource> known = null; // null until the first reset went through
+            var resets = new ResetCollector<TKey, TResource>();
+            await foreach (var e in source.WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                if (resets.TryCollect(e, out var reset))
                 {
-                    if (!cacheSynchronized)
+                    if (reset == null)
+                        continue;
+                    if (known == null)
                     {
-                        return resetBuffer;
+                        known = new Dictionary<TKey, TResource>();
+                        foreach (var item in reset)
+                            known[item.Key] = item.Value;
+                        if (reset.Count == 0)
+                            yield return ResourceEvent<TKey, TResource>.EmptyReset;
+                        foreach (var item in reset)
+                            yield return item;
+                        continue;
                     }
 
-                    var cacheSnapshot = cache.Snapshot();
-
-                    var newKeys = resetBuffer
-                        .Where(x => x.Key != null)
-                        .Select(x => x.Key)
-                        .ToHashSet();
-
-                    var addedEntities = resetBuffer
-                        .Where(x => x.Key != null && !cacheSnapshot.ContainsKey(x.Key))
-                        .Select(x => x.With(EventTypeFlags.Add | EventTypeFlags.Computed))
-                        .ToList();
-
-                    var addedKeys = addedEntities
-                        .Select(x => x.Key)
-                        .ToHashSet();
-
-                    var deletedEntities = cacheSnapshot
-                        .Where(x => !newKeys.Contains(x.Key))
-                        .Select(x => x.Value.ToResourceEvent(EventTypeFlags.Delete | EventTypeFlags.Computed, x.Key))
-                        .ToList();
-                    var deletedKeys = deletedEntities
-                        .Select(x => x.Key)
-                        .ToHashSet();
-
-                    // we can only compute updates if we are given a proper comparer to determine equality between objects
-                    // if not provided, will be sent downstream as just part of reset
-                    var updatedEntities = new List<ResourceEvent<TKey, TResource>>();
-                    if (comparer != null)
+                    var fresh = new Dictionary<TKey, TResource>();
+                    foreach (var item in reset)
+                        fresh[item.Key] = item.Value;
+                    foreach (var old in known.ToList())
                     {
-                        updatedEntities = resetBuffer
-                            .Where(x => cacheSnapshot.TryGetValue(x.Key, out var resource) && !comparer.Equals(resource, x.Value))
-                            .Select(x => x.With(EventTypeFlags.Modify | EventTypeFlags.Computed))
-                            .ToList();
+                        if (!fresh.ContainsKey(old.Key))
+                        {
+                            known.Remove(old.Key);
+                            yield return new ResourceEvent<TKey, TResource>(EventTypeFlags.Delete | EventTypeFlags.Computed, old.Key, old.Value);
+                        }
                     }
 
-                    var updatedKeys = updatedEntities
-                        .Select(x => x.Key)
-                        .ToHashSet();
+                    foreach (var item in fresh)
+                    {
+                        if (!known.TryGetValue(item.Key, out var existing))
+                        {
+                            known[item.Key] = item.Value;
+                            yield return new ResourceEvent<TKey, TResource>(EventTypeFlags.Add | EventTypeFlags.Computed, item.Key, item.Value);
+                        }
+                        else if (comparer == null || !comparer.Equals(existing, item.Value))
+                        {
+                            known[item.Key] = item.Value;
+                            yield return new ResourceEvent<TKey, TResource>(EventTypeFlags.Modify | EventTypeFlags.Computed, item.Key, item.Value);
+                        }
+                    }
 
-                    var resetEntities = resetBuffer
-                        .Where(x => x.Key != null &&
-                                    !addedKeys.Contains(x.Key) &&
-                                    !deletedKeys.Contains(x.Key) &&
-                                    !updatedKeys.Contains(x.Key))
-                        .ToReset()
-                        .ToList();
+                    continue;
+                }
 
-                    return deletedEntities
-                        .Union(addedEntities)
-                        .Union(updatedEntities)
-                        .Union(resetEntities);
-                })
-                .Into(cache)
-                .Do(x => { cacheSynchronized = true; });
+                if (known != null)
+                {
+                    if (e.EventFlags.HasFlag(EventTypeFlags.Delete))
+                        known.Remove(e.Key);
+                    else
+                        known[e.Key] = e.Value;
+                }
+
+                yield return e;
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
-using FluentAssertions;
+using AwesomeAssertions;
 using k8s.Models;
 using Steeltoe.Informers.InformersBase.Cache;
 using Steeltoe.Informers.KubernetesBase.Cache;
@@ -22,10 +22,10 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
             sut.Set(a1);
             sut.Set(a2);
             sut.Set(b1);
-            sut.ByNamespace("default").Should().BeEquivalentTo(a1, a2);
-            sut.ByLabel("app").Should().BeEquivalentTo(a1,a2, b1);
-            sut.ByLabel("app", "a").Should().BeEquivalentTo(a1, a2);
-            sut.ByLabel("app", "b").Should().BeEquivalentTo(b1);
+            sut.ByNamespace("default").Should().BeEquivalentTo(new[] { a1, a2 });
+            sut.ByLabel("app").Should().BeEquivalentTo(new[] { a1,a2, b1 });
+            sut.ByLabel("app", "a").Should().BeEquivalentTo(new[] { a1, a2 });
+            sut.ByLabel("app", "b").Should().BeEquivalentTo(new[] { b1 });
         }
     }
 }

@@ -1,12 +1,9 @@
 using System;
-using System.Threading;
 using k8s;
+using k8s.Models;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Rest;
-using Microsoft.Rest.Serialization;
-using Microsoft.Rest.TransientFaultHandling;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Serialization;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Steeltoe.Informers.KubernetesBase;
 
 namespace Steeltoe.Informers.KubernetesCore
@@ -15,43 +12,39 @@ namespace Steeltoe.Informers.KubernetesCore
     {
         public static IServiceCollection AddKubernetesClient(this IServiceCollection services, Func<KubernetesClientConfiguration> configProvider)
         {
-            
-            var config = configProvider();
-            
-            void ConfigureSerializerSettings(JsonSerializerSettings settings)
-            {
-                settings.ContractResolver = new ReadOnlyJsonContractResolver() {NamingStrategy = new CamelCaseNamingStrategy()};
-            }
-
-            services.AddHttpClient("DefaultName")
-                .AddTypedClient<IKubernetes>((httpClient, serviceProvider) =>
-                {
-                    httpClient.Timeout = Timeout.InfiniteTimeSpan;
-                    var kubernetes = new Kubernetes(config, httpClient);
-                    httpClient.BaseAddress = kubernetes.BaseUri;
-                    ConfigureSerializerSettings(kubernetes.SerializationSettings);
-                    ConfigureSerializerSettings(kubernetes.DeserializationSettings);
-                    return kubernetes;
-                })
-                .AddHttpMessageHandler(() => new KubernetesClientHandler(TimeSpan.FromSeconds(100), config))
-                .AddHttpMessageHandler(() => new RetryDelegatingHandler { RetryPolicy = new RetryPolicy<HttpStatusCodeErrorDetectionStrategy>(new ExponentialBackoffRetryStrategy()) })
-                .AddHttpMessageHandler(KubernetesClientConfiguration.CreateWatchHandler)
-                .ConfigurePrimaryHttpMessageHandler(config.CreateDefaultHttpClientHandler);
-            
-            services.AddSingleton<IKubernetesGenericClient>(container =>
-            {
-                var kubernetesClient = (Kubernetes) container.GetRequiredService<IKubernetes>();
-                return new KubernetesGenericClient(kubernetesClient.HttpClient, kubernetesClient.SerializationSettings, kubernetesClient.DeserializationSettings);
-            }); 
+            services.AddSingleton(_ => configProvider());
+            services.AddSingleton<k8s.Kubernetes>(container => new k8s.Kubernetes(container.GetRequiredService<KubernetesClientConfiguration>()));
+            services.AddSingleton<IKubernetes>(container => container.GetRequiredService<k8s.Kubernetes>());
+            services.AddSingleton<IKubernetesGenericClient>(container => new KubernetesGenericClient(container.GetRequiredService<k8s.Kubernetes>()));
 
             return services;
         }
 
+        /// <summary>
+        ///     Registers the shared informer factory (<see cref="IKubernetesInformerFactory" />) and <see cref="IKubernetesInformer{TResource}" />
+        ///     for every model type. Every resolution of an informer for the same type is the same shared informer.
+        /// </summary>
         public static IServiceCollection AddKubernetesInformers(this IServiceCollection services)
         {
-            services.AddTransient(typeof(KubernetesInformer<>));
-            services.AddSingleton(typeof(IKubernetesInformer<>), typeof(KubernetesInformer<>));
+            services.TryAddSingleton<IKubernetesInformerFactory>(container => new KubernetesInformerFactory(
+                container.GetRequiredService<IKubernetesGenericClient>(),
+                container.GetServices<KubernetesInformerRegistration>(),
+                container.GetService<ILoggerFactory>()));
+            services.TryAddSingleton(typeof(IKubernetesInformer<>), typeof(FactoryInformer<>));
             return services;
+        }
+
+        /// <summary>
+        ///     Registers the informers (see <see cref="AddKubernetesInformers" />) and sets up the informer of <typeparamref name="TResource" />:
+        ///     a transform applied before caching, indexes, or the mutation detector.
+        /// </summary>
+        public static IServiceCollection AddKubernetesInformer<TResource>(this IServiceCollection services, Action<KubernetesInformerRegistration<TResource>> configure = null)
+            where TResource : IKubernetesObject<V1ObjectMeta>
+        {
+            var registration = new KubernetesInformerRegistration<TResource>();
+            configure?.Invoke(registration);
+            services.AddSingleton<KubernetesInformerRegistration>(registration);
+            return services.AddKubernetesInformers();
         }
     }
 }
