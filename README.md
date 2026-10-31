@@ -123,6 +123,20 @@ await client.PatchAsync(pod, p => p.Metadata.Labels["tier"] = "web", ct);       
 - `status.Conditions.Set("Ready", true, reason: "PodsReady", observedGeneration: gen)` updates `lastTransitionTime` only when the status value changes; also `Get`, `IsTrue`, `Remove`.
 - `client.ApplyAsync(desired, fieldManager)` declares a child's full desired state with server-side apply.
 
+### Kubernetes Events
+
+`KubernetesEventRecorder` (`IEventRecorder`) writes the Events `kubectl describe` shows:
+
+```csharp
+events.Warning(set, "FailedCreate", ex.Message, action: "Create", related: pod);
+events.For(set).Normal("SuccessfulCreate", $"Created pod {pod.Name()}");
+```
+
+- Recording never blocks or fails the caller: events go through a bounded queue to a background writer; API errors are logged, counted (`informers.kubernetes_events`) and dropped.
+- `events.k8s.io/v1` by default, `core/v1` with `Api = EventApi.CoreV1`; `ReportingController` and `ReportingInstance` (default: `POD_NAME`, or the machine name) are set.
+- Repeats of the same event within `AggregationWindow` update one Event's series count; each involved object is rate limited (`BurstPerObject`, refilled every `RefillInterval`).
+- `LoggingEventRecorder` and `NullEventRecorder` replace it for control planes without the `Event` resource.
+
 ### Metadata-only and untyped informers
 
 - `informers.MetadataOnly<V1Secret>()` requests the API server's `PartialObjectMetadata` representation: labels, annotations, owner references and finalizers, but no data, `spec` or `status`.
