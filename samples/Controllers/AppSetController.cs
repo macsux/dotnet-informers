@@ -145,7 +145,7 @@ namespace Steeltoe.Informers.Samples.Controllers
                 update.Status = new AppSetStatus { Replicas = live.Count, ReadyReplicas = ready, ObservedGeneration = set.Metadata.Generation };
                 if (BeforeStatusWrite != null)
                     await BeforeStatusWrite(update).ConfigureAwait(false);
-                await CountConflicts(() => _generic.ReplaceWithHttpMessagesAsync(update, statusOnly: true, cancellationToken: ct)).ConfigureAwait(false);
+                await CountConflicts(() => _generic.ReplaceAsync(update, status: true, cancellationToken: ct)).ConfigureAwait(false);
                 Stats.Increment("status-writes");
             }
 
@@ -179,7 +179,7 @@ namespace Steeltoe.Informers.Samples.Controllers
         }
 
         private async Task<AppSet> ReadAsync(AppSet set, CancellationToken ct) =>
-            (await _generic.ReadWithHttpMessagesAsync<AppSet>(set.Metadata.Name, set.Metadata.NamespaceProperty, cancellationToken: ct).ConfigureAwait(false)).Body;
+            await _generic.GetAsync<AppSet>(set.Metadata.Name, set.Metadata.NamespaceProperty, ct).ConfigureAwait(false);
 
         /// <summary>Changes the finalizers of the current object, guarded by its resourceVersion (a merge patch replaces the whole list).</summary>
         private async Task<AppSet> UpdateFinalizersAsync(AppSet set, Func<IEnumerable<string>, IEnumerable<string>> change, CancellationToken ct)
@@ -187,8 +187,7 @@ namespace Steeltoe.Informers.Samples.Controllers
             var current = await ReadAsync(set, ct).ConfigureAwait(false);
             var finalizers = change(current.Metadata.Finalizers ?? new List<string>()).Distinct().ToList();
             var patch = new V1Patch(KubernetesJson.Serialize(new { metadata = new { finalizers, resourceVersion = current.Metadata.ResourceVersion } }), V1Patch.PatchType.MergePatch);
-            var response = await CountConflicts(() => _generic.PatchWithHttpMessagesAsync<AppSet>(patch, set.Metadata.Name, set.Metadata.NamespaceProperty, cancellationToken: ct)).ConfigureAwait(false);
-            return response.Body;
+            return await CountConflicts(() => _generic.PatchAsync(current, patch, cancellationToken: ct)).ConfigureAwait(false);
         }
 
         private async Task<bool> DeletePodAsync(V1Pod pod, CancellationToken ct)

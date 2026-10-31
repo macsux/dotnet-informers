@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup>
+    <!-- R0: every package is trim- and AOT-compatible; the analyzers run on every build -->
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+</Project>

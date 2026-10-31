@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using k8s;
 using k8s.Models;
+using Steeltoe.Informers.InformersBase;
 
 namespace Steeltoe.Informers.KubernetesBase
 {
@@ -48,7 +49,7 @@ namespace Steeltoe.Informers.KubernetesBase
         public static bool IsBeingDeleted(this IMetadata<V1ObjectMeta> obj) => obj?.Metadata?.DeletionTimestamp != null;
 
         /// <summary>
-        ///     A deep copy (a serialization round-trip). Objects handed out by an informer are shared by every consumer and must not be modified;
+        ///     A deep copy (a serialization round-trip through <see cref="InformerJson" />). Objects handed out by an informer are shared by every consumer and must not be modified;
         ///     clone one before changing it, e.g. to build an update.
         /// </summary>
         public static T DeepClone<T>(this T obj) where T : class
@@ -57,7 +58,7 @@ namespace Steeltoe.Informers.KubernetesBase
                 return null;
             if (obj is UntypedKubernetesObject untyped)
                 return UntypedKubernetesObject.FromJson(untyped.Raw) as T;
-            return KubernetesJson.Deserialize<T>(KubernetesJson.Serialize(obj));
+            return InformerJson.Clone(obj);
         }
 
         private static IEnumerable<V1OwnerReference> OwnerReferences(IMetadata<V1ObjectMeta> obj, string kind, string apiVersion) =>

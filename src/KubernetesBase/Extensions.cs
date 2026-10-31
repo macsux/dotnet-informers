@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
 using k8s;
 using k8s.Autorest;
@@ -36,58 +37,49 @@ namespace Steeltoe.Informers.KubernetesBase
         /// <summary>
         ///     Checks if the exception indicates that the requested resource version is too old and the list needs to be fetched from scratch
         /// </summary>
-        internal static bool IsResourceVersionGone(this Exception exception) => exception switch
-        {
-            HttpOperationException { Response.StatusCode: HttpStatusCode.Gone } => true,
-            KubernetesException { Status.Code: (int)HttpStatusCode.Gone } => true,
-            _ => false,
-        };
+        internal static bool IsResourceVersionGone(this Exception exception) => exception.IsGone();
 
         /// <summary>
-        ///     Checks if the exception is an optimistic-concurrency conflict (HTTP 409): the object changed since it was read
+        ///     Checks if the exception is an optimistic-concurrency conflict (HTTP 409 other than <c>AlreadyExists</c>): the object changed since it
+        ///     was read.
         /// </summary>
-        public static bool IsConflict(this Exception exception) => exception switch
+        public static bool IsConflict(this Exception exception) => StatusCode(exception) == HttpStatusCode.Conflict && Reason(exception) != "AlreadyExists";
+
+        /// <summary>Checks if a create failed because an object of that name exists (HTTP 409, reason <c>AlreadyExists</c>).</summary>
+        public static bool IsAlreadyExists(this Exception exception) => StatusCode(exception) == HttpStatusCode.Conflict && Reason(exception) == "AlreadyExists";
+
+        /// <summary>Checks if the object doesn't exist (HTTP 404).</summary>
+        public static bool IsNotFound(this Exception exception) => StatusCode(exception) == HttpStatusCode.NotFound;
+
+        /// <summary>Checks if the requested resource version is gone (HTTP 410), e.g. a watch after compaction.</summary>
+        public static bool IsGone(this Exception exception) => StatusCode(exception) == HttpStatusCode.Gone;
+
+        private static HttpStatusCode? StatusCode(Exception exception) => exception switch
         {
-            HttpOperationException { Response.StatusCode: HttpStatusCode.Conflict } => true,
-            KubernetesException { Status.Code: (int)HttpStatusCode.Conflict } => true,
-            _ => false,
+            HttpOperationException { Response: not null } http => http.Response.StatusCode,
+            KubernetesException { Status.Code: not null } k8s => (HttpStatusCode)k8s.Status.Code.Value,
+            _ => null,
         };
 
-        internal static void EnsureSuccessStatusCode(this HttpOperationResponse response)
+        /// <summary>The <c>reason</c> of the <c>Status</c> the API server returned with an error.</summary>
+        private static string Reason(Exception exception)
         {
-            if (!response.Response.IsSuccessStatusCode)
+            if (exception is KubernetesException k8s)
+                return k8s.Status?.Reason;
+            var content = (exception as HttpOperationException)?.Response?.Content;
+            if (string.IsNullOrEmpty(content))
+                return null;
+            try
             {
-                throw new HttpOperationException($"Web server replied with error code {response.Response.StatusCode}")
-                {
-                    Request = response.Request != null ? new HttpRequestMessageWrapper(response.Request, null) : null,
-                    Response = new HttpResponseMessageWrapper(response.Response, null),
-                };
+                using var document = JsonDocument.Parse(content);
+                return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String
+                    ? reason.GetString()
+                    : null;
             }
-        }
-
-        internal static string ToCamelCase(this string value)
-        {
-            // If there are 0 or 1 characters, just return the string.
-            if (value == null || value.Length < 2)
+            catch (JsonException)
             {
-                return value;
+                return null;
             }
-
-            // Split the string into words.
-            var words = value.Split(
-                new char[0],
-                StringSplitOptions.RemoveEmptyEntries);
-
-            // Combine the words.
-            var result = words[0].ToLower();
-            for (var i = 1; i < words.Length; i++)
-            {
-                result +=
-                    words[i].Substring(0, 1).ToUpper() +
-                    words[i].Substring(1);
-            }
-
-            return result;
         }
     }
 }
