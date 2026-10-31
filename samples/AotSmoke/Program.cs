@@ -112,7 +112,7 @@ namespace Steeltoe.Informers.Samples.AotSmoke
             services.AddSingleton<IKubernetes>(kubernetes);
             services.AddSingleton(client);
             services.AddSingleton<IKubernetesGenericClient>(client);
-            services.AddKubernetesOperator(o => o.Namespace(ns).Events(e => e.ReportingController = "smoke.steeltoe.io/mirror"))
+            services.AddKubernetesOperator(o => o.Namespace(ns).LeaderElection("smoke-operator", ns, "smoke").Events(e => e.ReportingController = "smoke.steeltoe.io/mirror"))
                 .AddController<MirrorController>();
             await using var provider = services.BuildServiceProvider();
             var hosts = provider.GetServices<IHostedService>().ToList();
@@ -128,6 +128,7 @@ namespace Steeltoe.Informers.Samples.AotSmoke
                     var map = await client.GetAsync<V1ConfigMap>("cm", ns, ct);
                     return map.HasFinalizer(MirrorController.Finalizer) && map.Metadata.Labels?.ContainsKey(MirrorController.MirroredLabel) == true;
                 }, ct);
+                checks.Check("the operator holds its lease", (await client.GetAsync<V1Lease>("smoke-operator", ns, ct))?.Spec?.HolderIdentity == "smoke");
                 await checks.EventuallyAsync("controller records an event", async () =>
                     (await client.ListAsync<Eventsv1Event>(ns, cancellationToken: ct)).Any(x => x.Reason == "Mirrored" && x.ReportingController == "smoke.steeltoe.io/mirror"), ct);
 

@@ -107,6 +107,11 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
             (await _generic.DeleteAsync(Pod("u1"), cancellationToken: TestContext.Current.CancellationToken)).Should().BeTrue();
             _server.LogEntries.Last().RequestMessage.Body.Should().Contain("\"preconditions\":{\"uid\":\"u1\"}");
 
+            var shared = new V1DeleteOptions { PropagationPolicy = "Foreground" };
+            await _generic.DeleteAsync(Pod("u2"), shared, TestContext.Current.CancellationToken);
+            shared.Preconditions.Should().BeNull("the caller's options aren't modified");
+            _server.LogEntries.Last().RequestMessage.Body.Should().Contain("\"uid\":\"u2\"").And.Contain("Foreground");
+
             _server.Reset();
             Respond("/api/v1/namespaces/prod/pods/web", "DELETE", 404, "{\"kind\":\"Status\",\"reason\":\"NotFound\",\"code\":404}");
             (await _generic.DeleteAsync(Pod("u1"), cancellationToken: TestContext.Current.CancellationToken)).Should().BeFalse();

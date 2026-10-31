@@ -74,6 +74,16 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
         }
 
         [Fact]
+        public async Task RemovingStatus_IsSentToTheStatusSubresource()
+        {
+            var client = new FakeGenericClient();
+            var pod = client.Put(NewPod());
+            var result = await client.PatchAsync(pod, p => p.Status = null, cancellationToken: Ct);
+            client.Writes.Single().Should().Match<(string Verb, string Key, bool Status, string Body)>(w => w.Status && w.Body.StartsWith("{\"status\":null"));
+            result.Status.Should().BeNull();
+        }
+
+        [Fact]
         public async Task WithoutStatusSubresource_StatusGoesToTheMainResource()
         {
             var client = new FakeGenericClient { HasStatus = false };

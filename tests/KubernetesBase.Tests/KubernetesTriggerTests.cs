@@ -96,7 +96,7 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
             writes.Record("prod/web", "2");
             source.Send(Modify(Pod(phase: "Running", resourceVersion: "2")));
             (await NextFlags(e)).Should().HaveFlag(EventTypeFlags.Quiet);
-            writes.Count.Should().Be(0, "a seen echo is consumed");
+            writes.IsOwnWrite("prod/web", "2").Should().BeTrue("entries aren't consumed: other pipelines over the same object must recognize the echo too");
 
             source.Send(Modify(Pod(phase: "Failed", resourceVersion: "3")));
             (await NextFlags(e)).Should().NotHaveFlag(EventTypeFlags.Quiet, "someone else's write");
@@ -113,6 +113,25 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
             source.Send(new ResourceEvent<string, V1Pod>(EventTypeFlags.Delete, "prod/web", Pod()));
             await NextFlags(e);
             writes.Count.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task RecordingClient_RecordsOnlyGuardedWritesThatChangedSomething()
+        {
+            var writes = new OwnWrites();
+            var fake = new Fakes.FakeGenericClient { HasStatus = false };
+            var client = fake.RecordingWritesTo(writes);
+            var pod = fake.Put(Pod());
+
+            var patched = await client.PatchAsync(pod, p => p.Metadata.Labels = new Dictionary<string, string> { ["a"] = "b" }, cancellationToken: Ct);
+            writes.IsOwnWrite("prod/web", patched.Metadata.ResourceVersion).Should().BeTrue();
+
+            // someone else writes; our unguarded no-op returns their version, which must not be taken for ours
+            var theirs = fake.Put(Pod(image: "other"));
+            await client.PatchAsync(theirs, new V1Patch("{}", V1Patch.PatchType.MergePatch), cancellationToken: Ct);
+            writes.IsOwnWrite("prod/web", theirs.Metadata.ResourceVersion).Should().BeFalse();
+            await client.ApplyAsync(Pod(), "test", cancellationToken: Ct);
+            writes.Count.Should().Be(1, "server-side apply isn't guarded by a version");
         }
 
         [Fact]

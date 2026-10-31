@@ -98,6 +98,8 @@ namespace System.Linq
             var newKeys = JoinKeysOf(value);
             _lastKeys[key] = newKeys;
             ApplyUpsert(key, value, oldKeys, newKeys);
+            // moving between groups changes which results it belongs to: that always triggers
+            quiet &= oldKeys.AsSpan().SequenceEqual(newKeys);
             return new SideChange(key, oldKeys, newKeys, computed, quiet);
         }
 

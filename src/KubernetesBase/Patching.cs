@@ -69,9 +69,11 @@ namespace Steeltoe.Informers.KubernetesBase
 
             var writeOptions = new KubernetesWriteOptions { FieldManager = options.FieldManager, DryRun = options.DryRun };
             JsonNode statusPatch = null;
+            var patchStatus = false;
             if (diff.ContainsKey("status") && (await client.GetResourceInfoAsync(original, cancellationToken).ConfigureAwait(false)).HasStatus)
             {
-                statusPatch = diff["status"];
+                patchStatus = true;
+                statusPatch = diff["status"]; // null: status was removed
                 diff.Remove("status");
             }
 
@@ -83,10 +85,10 @@ namespace Steeltoe.Informers.KubernetesBase
                 version = current.Metadata?.ResourceVersion;
             }
 
-            if (statusPatch != null)
+            if (patchStatus)
             {
                 // guarded by the version the main patch produced: nobody else may have written in between
-                var status = new JsonObject { ["status"] = statusPatch.DeepClone() };
+                var status = new JsonObject { ["status"] = statusPatch?.DeepClone() };
                 current = await client.PatchAsync(current, Patch(status, options.RequireCurrentVersion ? version : null), true, writeOptions, cancellationToken).ConfigureAwait(false);
             }
 

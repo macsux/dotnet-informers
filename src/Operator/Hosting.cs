@@ -330,7 +330,7 @@ namespace Steeltoe.Informers.Operator
                 DefaultNamespace = options.DefaultNamespace,
                 LeaderElection = leader == null
                     ? null
-                    : new KubernetesLeaderElection(container.GetRequiredService<IKubernetes>(), leader.Value.Namespace, leader.Value.LeaseName, leader.Value.Identity,
+                    : new KubernetesLeaderElection(container.GetRequiredService<IKubernetesGenericClient>(), leader.Value.Namespace, leader.Value.LeaseName, leader.Value.Identity,
                         logger: loggerFactory?.CreateLogger("Steeltoe.Informers.LeaderElection")),
                 AutomaticEvents = options.AutomaticEventsEnabled,
             };

@@ -40,6 +40,8 @@ namespace Steeltoe.Informers.Operator.Web.Tests
         public ValueTask<AppSet> CreateAsync(AppSet set, AdmissionContext context, CancellationToken ct)
         {
             set.Spec.Image ??= "registry.k8s.io/pause:3.10";
+            if (set.Spec.Replicas == 0)
+                set.Spec.Replicas = 1;
             (set.Metadata.Labels ??= new Dictionary<string, string>())["defaulted/by"] = "webhook";
             return new(set);
         }
@@ -163,6 +165,16 @@ namespace Steeltoe.Informers.Operator.Web.Tests
             {
                 ("add", "/metadata/labels"),
                 ("add", "/spec/image"),
+            });
+
+            // defaulting a value-typed field the manifest left out: the raw object has no spec.replicas, so the op must be an add
+            var withoutReplicas = """{"apiVersion":"samples.steeltoe.io/v1","kind":"AppSet","metadata":{"name":"web","labels":{"x":"y"}},"spec":{"image":"nginx"}}""";
+            var defaulted = await AdmitAsync("/mutate/samples.steeltoe.io/v1/appsets", "CREATE", withoutReplicas);
+            var ops = JsonNode.Parse(Encoding.UTF8.GetString(Convert.FromBase64String(defaulted["response"]!["patch"]!.GetValue<string>())))!.AsArray();
+            ops.Select(x => (x!["op"]!.GetValue<string>(), x["path"]!.GetValue<string>())).Should().BeEquivalentTo(new[]
+            {
+                ("add", "/spec/replicas"),
+                ("add", "/metadata/labels/defaulted~1by"),
             });
 
             var unchanged = await AdmitAsync("/mutate/samples.steeltoe.io/v1/appsets", "UPDATE", AppSetJson(3, "nginx"), AppSetJson(2, "nginx"));

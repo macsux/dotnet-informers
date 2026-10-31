@@ -11,8 +11,8 @@ namespace Steeltoe.Informers.KubernetesBase
 {
     /// <summary>
     ///     The <c>resourceVersion</c>s a controller's own writes returned, per object key, so their echoes can be told apart from other writers'
-    ///     changes (<see cref="OwnWritesExtensions.IgnoreWritesFrom{TResource}" />). Entries go when their echo is seen, the key is deleted, or
-    ///     they expire, so the table stays bounded by writes in flight. Thread-safe.
+    ///     changes (<see cref="OwnWritesExtensions.IgnoreWritesFrom{TResource}" />). Entries go when the key is deleted or they expire, so the
+    ///     table stays bounded by recent writes. Thread-safe.
     /// </summary>
     public sealed class OwnWrites
     {
@@ -71,7 +71,10 @@ namespace Steeltoe.Informers.KubernetesBase
             }
         }
 
-        /// <summary>Whether this version of the object is the echo of one of our writes; a match is consumed.</summary>
+        /// <summary>
+        ///     Whether this version of the object is the echo of one of our writes. Entries aren't consumed by a match: several pipelines may watch
+        ///     the same object (e.g. two relationships over one type), and each must recognize the echo; they expire instead.
+        /// </summary>
         public bool IsOwnWrite(string key, string resourceVersion)
         {
             if (key == null || resourceVersion == null)
@@ -82,12 +85,13 @@ namespace Steeltoe.Informers.KubernetesBase
                 if (!_entries.TryGetValue(key, out var list))
                     return false;
                 list.RemoveAll(x => x.ExpiresAt <= now);
-                var index = list.FindIndex(x => x.ResourceVersion == resourceVersion);
-                if (index >= 0)
-                    list.RemoveAt(index);
                 if (list.Count == 0)
+                {
                     _entries.Remove(key);
-                return index >= 0;
+                    return false;
+                }
+
+                return list.Exists(x => x.ResourceVersion == resourceVersion);
             }
         }
 
@@ -143,7 +147,11 @@ namespace Steeltoe.Informers.KubernetesBase
             }).AsInformable();
         }
 
-        /// <summary>A client that records the result of every write it makes (create, replace, patch, apply) in <paramref name="writes" />.</summary>
+        /// <summary>
+        ///     A client that records, in <paramref name="writes" />, the versions its writes produced: replaces and patches guarded by the
+        ///     <c>resourceVersion</c> they were based on, when the server returned a new one. Unguarded writes (server-side apply, a patch without
+        ///     the precondition) aren't recorded: when they change nothing the server returns the current version, which may be another writer's.
+        /// </summary>
         public static IKubernetesGenericClient RecordingWritesTo(this IKubernetesGenericClient client, OwnWrites writes) =>
             new RecordingClient(client ?? throw new ArgumentNullException(nameof(client)), writes ?? throw new ArgumentNullException(nameof(writes)));
 
@@ -158,10 +166,31 @@ namespace Steeltoe.Informers.KubernetesBase
                 _writes = writes;
             }
 
-            private T Recorded<T>(T written) where T : IKubernetesObject<V1ObjectMeta>
+            /// <summary>Records <paramref name="written" /> when the write was guarded by <paramref name="baseVersion" /> and produced a new version.</summary>
+            private T Recorded<T>(T written, string baseVersion) where T : IKubernetesObject<V1ObjectMeta>
             {
-                _writes.Record(written);
+                if (baseVersion != null && written?.Metadata?.ResourceVersion != null && written.Metadata.ResourceVersion != baseVersion)
+                    _writes.Record(written);
                 return written;
+            }
+
+            /// <summary>The <c>metadata.resourceVersion</c> precondition a merge patch carries, if any.</summary>
+            private static string Precondition(V1Patch patch)
+            {
+                if (patch.Type != V1Patch.PatchType.MergePatch || patch.Content is not string json)
+                    return null;
+                try
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(json);
+                    return document.RootElement.TryGetProperty("metadata", out var metadata) && metadata.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                           metadata.TryGetProperty("resourceVersion", out var version) && version.ValueKind == System.Text.Json.JsonValueKind.String
+                        ? version.GetString()
+                        : null;
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return null;
+                }
             }
 
             public Task<T> GetAsync<T>(string name, string @namespace = null, CancellationToken cancellationToken = default) where T : IKubernetesObject<V1ObjectMeta> =>
@@ -171,19 +200,20 @@ namespace Steeltoe.Informers.KubernetesBase
                 where T : IKubernetesObject<V1ObjectMeta> =>
                 _inner.ListAsync<T>(@namespace, labelSelector, fieldSelector, cancellationToken);
 
-            public async Task<T> CreateAsync<T>(T obj, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default) where T : IKubernetesObject<V1ObjectMeta> =>
-                Recorded(await _inner.CreateAsync(obj, options, cancellationToken).ConfigureAwait(false));
+            // a create's echo is an add, which always triggers
+            public Task<T> CreateAsync<T>(T obj, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default) where T : IKubernetesObject<V1ObjectMeta> =>
+                _inner.CreateAsync(obj, options, cancellationToken);
 
             public async Task<T> ReplaceAsync<T>(T obj, bool status = false, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
                 where T : IKubernetesObject<V1ObjectMeta> =>
-                Recorded(await _inner.ReplaceAsync(obj, status, options, cancellationToken).ConfigureAwait(false));
+                Recorded(await _inner.ReplaceAsync(obj, status, options, cancellationToken).ConfigureAwait(false), obj?.Metadata?.ResourceVersion);
 
             public async Task<T> PatchAsync<T>(T obj, V1Patch patch, bool status = false, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
                 where T : IKubernetesObject<V1ObjectMeta> =>
-                Recorded(await _inner.PatchAsync(obj, patch, status, options, cancellationToken).ConfigureAwait(false));
+                Recorded(await _inner.PatchAsync(obj, patch, status, options, cancellationToken).ConfigureAwait(false), Precondition(patch));
 
-            public async Task<T> ApplyAsync<T>(T desired, string fieldManager, bool force = false, CancellationToken cancellationToken = default) where T : IKubernetesObject<V1ObjectMeta> =>
-                Recorded(await _inner.ApplyAsync(desired, fieldManager, force, cancellationToken).ConfigureAwait(false));
+            public Task<T> ApplyAsync<T>(T desired, string fieldManager, bool force = false, CancellationToken cancellationToken = default) where T : IKubernetesObject<V1ObjectMeta> =>
+                _inner.ApplyAsync(desired, fieldManager, force, cancellationToken);
 
             public Task<bool> DeleteAsync<T>(T obj, V1DeleteOptions options = null, CancellationToken cancellationToken = default) where T : IKubernetesObject<V1ObjectMeta> =>
                 _inner.DeleteAsync(obj, options, cancellationToken);

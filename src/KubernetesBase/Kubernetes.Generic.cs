@@ -146,7 +146,18 @@ namespace Steeltoe.Informers.KubernetesBase
         {
             if (obj == null)
                 throw new ArgumentNullException(nameof(obj));
-            options ??= new V1DeleteOptions();
+            // a copy: the caller's options may be shared between deletes
+            options = options == null ? new V1DeleteOptions() : new V1DeleteOptions
+            {
+                ApiVersion = options.ApiVersion,
+                Kind = options.Kind,
+                DryRun = options.DryRun,
+                GracePeriodSeconds = options.GracePeriodSeconds,
+                IgnoreStoreReadErrorWithClusterBreakingPotential = options.IgnoreStoreReadErrorWithClusterBreakingPotential,
+                OrphanDependents = options.OrphanDependents,
+                Preconditions = options.Preconditions,
+                PropagationPolicy = options.PropagationPolicy,
+            };
             if (options.Preconditions == null && obj.Metadata?.Uid != null)
                 options.Preconditions = new V1Preconditions { Uid = obj.Metadata.Uid };
             var url = await ObjectUrlAsync(obj, false, cancellationToken).ConfigureAwait(false);

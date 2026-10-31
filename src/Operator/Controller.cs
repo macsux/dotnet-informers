@@ -15,7 +15,9 @@ namespace Steeltoe.Informers.Operator
     /// </summary>
     /// <remarks>
     ///     Instances are resolved from dependency injection with a scope per reconcile (so they can take scoped dependencies); <see cref="Configure" />
-    ///     runs on one instance at startup.
+    ///     runs on one instance at startup, whose scope ends right after. The reconcile, <see cref="DeletedAsync" /> and finalizer cleanups that are
+    ///     methods of the controller run on the instance of the reconcile's scope; other lambdas given to <see cref="Configure" /> (selectors,
+    ///     filters, triggers) keep the startup instance, so they shouldn't use its scoped dependencies.
     /// </remarks>
     public abstract class Controller<T> : IController where T : class, IKubernetesObject<V1ObjectMeta>
     {

@@ -106,7 +106,7 @@ namespace Steeltoe.Informers.Operator
             }
 
             if (options.Leader != null)
-                rules.Add((new GroupVersionResource("coordination.k8s.io", "v1", "leases"), new[] { "get", "create", "update" }));
+                rules.Add((new GroupVersionResource("coordination.k8s.io", "v1", "leases"), new[] { "get", "create", "update", "patch" }));
 
             var sb = new StringBuilder();
             sb.Append("# generated from the operator's controller registrations by Steeltoe.Informers.Operator; don't edit\n");

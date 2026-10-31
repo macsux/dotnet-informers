@@ -19,13 +19,15 @@ namespace informers
     {
         private readonly IKubernetesInformerFactory _informers;
         private readonly IKubernetes _kubernetes;
+        private readonly IKubernetesGenericClient _client;
         private readonly IConfiguration _configuration;
         private readonly ILoggerFactory _loggerFactory;
 
-        public ReadinessControllerService(IKubernetesInformerFactory informers, IKubernetes kubernetes, IConfiguration configuration, ILoggerFactory loggerFactory)
+        public ReadinessControllerService(IKubernetesInformerFactory informers, IKubernetes kubernetes, IKubernetesGenericClient client, IConfiguration configuration, ILoggerFactory loggerFactory)
         {
             _informers = informers;
             _kubernetes = kubernetes;
+            _client = client;
             _configuration = configuration;
             _loggerFactory = loggerFactory;
         }
@@ -34,7 +36,7 @@ namespace informers
         {
             var ns = _configuration["Namespace"] ?? "default";
             var identity = _configuration["LeaderElection:Identity"] ?? Environment.MachineName;
-            using var election = new KubernetesLeaderElection(_kubernetes, ns, _configuration["LeaderElection:Lease"] ?? "readiness-controller", identity,
+            using var election = new KubernetesLeaderElection(_client, ns, _configuration["LeaderElection:Lease"] ?? "readiness-controller", identity,
                 leaseDuration: TimeSpan.FromSeconds(6), renewDeadline: TimeSpan.FromSeconds(4), retryPeriod: TimeSpan.FromSeconds(1),
                 logger: _loggerFactory.CreateLogger<KubernetesLeaderElection>());
             var controller = new DeploymentReadinessController(_informers, _kubernetes) { Identity = identity };

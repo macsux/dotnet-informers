@@ -100,8 +100,18 @@ namespace Steeltoe.Informers.Operator.Web
                         "UPDATE" => await mutator.UpdateAsync(Read<T>(request.OldObject), obj, context, ct).ConfigureAwait(false),
                         _ => obj,
                     };
-                    // both sides through the same serializer, so only the handler's changes show up
-                    var patch = JsonPatch.Create(original, Patching.ToJson(mutated ?? obj));
+                    // what the handler changed (both sides through the same serializer), applied to the object as the API server sent it: the
+                    // JSON patch must address that object, which may lack members the typed round trip always writes (an int left out)
+                    var changes = JsonMergePatch.Create(original, Patching.ToJson(mutated ?? obj));
+                    var patch = new JsonArray();
+                    if (changes != null)
+                    {
+                        var raw = JsonNode.Parse(request.Object.Value.GetRawText())!.AsObject();
+                        var result = (JsonObject)raw.DeepClone();
+                        JsonMergePatch.Apply(result, changes);
+                        patch = JsonPatch.Create(raw, result);
+                    }
+
                     return new AdmissionResponse
                     {
                         Uid = request.Uid,

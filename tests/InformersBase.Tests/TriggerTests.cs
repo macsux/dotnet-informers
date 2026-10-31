@@ -222,6 +222,13 @@ namespace Steeltoe.Informers.InformersBase.Tests
 
             children.Send(E(EventTypeFlags.Modify, I("c", status: "s2", labels: new Dictionary<string, string> { ["owner"] = "o" })));
             (await Next(e)).EventFlags.Should().HaveFlag(EventTypeFlags.Quiet);
+
+            // a quiet change that moves the child to another owner changes which results it belongs to: that triggers
+            owners.Send(E(EventTypeFlags.Add, I("o2")));
+            (await Next(e)).Key.Should().Be("o2");
+            children.Send(E(EventTypeFlags.Modify, I("c", status: "s2", labels: new Dictionary<string, string> { ["owner"] = "o2" })));
+            var moved = new[] { await Next(e), await Next(e) };
+            moved.Should().OnlyContain(x => !x.EventFlags.HasFlag(EventTypeFlags.Quiet));
         }
     }
 }
