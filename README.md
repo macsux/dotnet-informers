@@ -106,6 +106,23 @@ A new change to a key replaces its pending retry. `RunOptions.RateLimit` limits 
 - **Finalizers.** A deletion first arrives as a `Modify` with `deletionTimestamp` set (`obj.IsBeingDeleted()`). The `Delete` follows once the last finalizer is removed.
 - **Reading another informer.** Before a handler consults a cache filled from another informer (`Into(cache)`), wait for `informer.WaitForSyncAsync()` and `cache.Synchronized`. Otherwise an empty cache makes every object look orphaned.
 
+### Writing objects
+
+There is one way to change an object: edit a copy, and the difference is sent as a JSON merge patch.
+
+```csharp
+await client.PatchAsync(set, s => s.Status.ReadyReplicas = ready, ct);          // → PATCH .../appsets/demo/status
+await client.PatchAsync(pod, p => p.Metadata.Labels["tier"] = "web", ct);        // → PATCH .../pods/demo-x7k2p
+```
+
+- The object passed in is never modified (it's cloned first), so objects from an informer can be passed directly. Nothing is sent when the edit changes nothing.
+- The patch carries the original's `resourceVersion`, so it fails with 409 Conflict if the object changed meanwhile, and `RunAsync` retries with the latest object. A merge patch replaces lists (finalizers, conditions) whole, which is only safe with this precondition; `new PatchOptions { RequireCurrentVersion = false }` opts out.
+- With a status subresource (from discovery), `status` changes go to `/status` and the rest to the object: two requests when both changed.
+- `Tracked<T>` is a copy-on-write handle: `Original` (shared, never modified), `Edit()` (clones on first call), `Value`, `IsModified`, `HasChanges()`. `client.SaveAsync(tracked)` sends the difference and makes the stored object the new original.
+- `child.WithOwnerReference(owner)` adds a controller owner reference (rejecting owners without a UID, owners in another namespace and a second controller); `owner.ToOwnerReference()` builds one. `client.CreateOwnedAsync(owner, child, expectations)` and `DeleteOwnedAsync` set the owner reference and record the create or delete in `Expectations`.
+- `status.Conditions.Set("Ready", true, reason: "PodsReady", observedGeneration: gen)` updates `lastTransitionTime` only when the status value changes; also `Get`, `IsTrue`, `Remove`.
+- `client.ApplyAsync(desired, fieldManager)` declares a child's full desired state with server-side apply.
+
 ### Metadata-only and untyped informers
 
 - `informers.MetadataOnly<V1Secret>()` requests the API server's `PartialObjectMetadata` representation: labels, annotations, owner references and finalizers, but no data, `spec` or `status`.

@@ -95,10 +95,9 @@ namespace Steeltoe.Informers.KubernetesBase
         {
             if (obj == null)
                 throw new ArgumentNullException(nameof(obj));
-            EnsureTypeMeta(obj);
             var resource = await GetResourceInfoAsync(obj, cancellationToken).ConfigureAwait(false);
             var url = BuildUrl(resource.Resource, resource.Namespaced ? obj.Metadata?.NamespaceProperty : null) + Query(options);
-            using var response = await SendAsync(HttpMethod.Post, url, InformerJson.Serialize(obj), JsonContentType, cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(HttpMethod.Post, url, SerializeWithTypeMeta(obj), JsonContentType, cancellationToken).ConfigureAwait(false);
             return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
         }
 
@@ -108,9 +107,8 @@ namespace Steeltoe.Informers.KubernetesBase
         {
             if (obj == null)
                 throw new ArgumentNullException(nameof(obj));
-            EnsureTypeMeta(obj);
             var url = await ObjectUrlAsync(obj, status, cancellationToken).ConfigureAwait(false) + Query(options);
-            using var response = await SendAsync(HttpMethod.Put, url, InformerJson.Serialize(obj), JsonContentType, cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(HttpMethod.Put, url, SerializeWithTypeMeta(obj), JsonContentType, cancellationToken).ConfigureAwait(false);
             return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
         }
 
@@ -136,10 +134,9 @@ namespace Steeltoe.Informers.KubernetesBase
                 throw new ArgumentNullException(nameof(desired));
             if (string.IsNullOrEmpty(fieldManager))
                 throw new ArgumentNullException(nameof(fieldManager));
-            EnsureTypeMeta(desired);
             var url = await ObjectUrlAsync(desired, false, cancellationToken).ConfigureAwait(false) + Query(new KubernetesWriteOptions { FieldManager = fieldManager }, force);
             // JSON is YAML: the apply content type accepts it
-            using var response = await SendAsync(HttpMethod.Patch, url, InformerJson.Serialize(desired), PatchContentType(V1Patch.PatchType.ApplyPatch), cancellationToken).ConfigureAwait(false);
+            using var response = await SendAsync(HttpMethod.Patch, url, SerializeWithTypeMeta(desired), PatchContentType(V1Patch.PatchType.ApplyPatch), cancellationToken).ConfigureAwait(false);
             return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
         }
 
@@ -248,15 +245,16 @@ namespace Steeltoe.Informers.KubernetesBase
             return BuildUrl(resource.Resource, resource.Namespaced ? obj.Metadata.NamespaceProperty : null, name, status);
         }
 
-        private static void EnsureTypeMeta(IKubernetesObject<V1ObjectMeta> obj)
+        /// <summary>The object's JSON with <c>apiVersion</c> and <c>kind</c> filled in from its type when unset (without changing the object).</summary>
+        private static string SerializeWithTypeMeta(IKubernetesObject<V1ObjectMeta> obj)
         {
             if (!string.IsNullOrEmpty(obj.ApiVersion) && !string.IsNullOrEmpty(obj.Kind))
-                return;
-            var attribute = obj.GetType().GetCustomAttribute<KubernetesEntityAttribute>();
-            if (attribute == null)
-                return;
-            obj.ApiVersion ??= string.IsNullOrEmpty(attribute.Group) ? attribute.ApiVersion : $"{attribute.Group}/{attribute.ApiVersion}";
-            obj.Kind ??= attribute.Kind;
+                return InformerJson.Serialize(obj);
+            var json = Patching.ToJson(obj);
+            var (apiVersion, kind) = obj.TypeMeta();
+            json["apiVersion"] ??= apiVersion;
+            json["kind"] ??= kind;
+            return json.ToJsonString();
         }
 
         private static async Task<T> ReadAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken)
