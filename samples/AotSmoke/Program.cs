@@ -34,6 +34,7 @@ namespace Steeltoe.Informers.Samples.AotSmoke
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
             var ct = timeout.Token;
             var checks = new Checks();
+            await Webhooks.CheckAsync(checks, ct);
             await client.CreateAsync(new V1Namespace { Metadata = new V1ObjectMeta { Name = ns } }, cancellationToken: ct);
             try
             {
@@ -159,7 +160,7 @@ namespace Steeltoe.Informers.Samples.AotSmoke
             }
         }
 
-        private sealed class Checks
+        internal sealed class Checks
         {
             public int Passed { get; private set; }
             public int Failed { get; private set; }

@@ -9,6 +9,7 @@ An informer is a **level-triggered replica** of a collection of objects (e.g. ev
 - `Steeltoe.Informers.KubernetesBase`: the Kubernetes list/watch producer, filter pushdown, metadata-only and untyped informers, controller helpers.
 - `Steeltoe.Informers.KubernetesCore`: dependency injection registration.
 - `Steeltoe.Informers.Operator`: controller classes and their hosting, on top of the above.
+- `Steeltoe.Informers.Operator.Web`: admission and conversion webhooks on ASP.NET Core minimal APIs.
 - `Steeltoe.Informers.Entities`: dependency-free attributes describing custom resources for CRD generation.
 - `Steeltoe.Informers.Crds`: build-time generation of CRDs (and, for operator apps, their RBAC role).
 
@@ -219,6 +220,47 @@ public class AppSetSpec
 - For an operator app (`OutputType` Exe), the build then starts the app with `INFORMERS_MANIFESTS_OUTPUT` set: it writes the `ClusterRole` its controllers need (their resources and verbs, status and finalizer subresources, Events, Leases with leader election) and exits before connecting to a cluster. `OperatorStatus.Resources` lists the same at runtime.
 - `.InstallCrds()` on the operator builder creates the CRDs embedded as YAML resources before the controllers start: for development only.
 
+### Admission and conversion webhooks
+
+`Steeltoe.Informers.Operator.Web` serves the webhooks Kubernetes calls, on minimal APIs with source-generated JSON (trim- and AOT-compatible):
+
+```csharp
+public sealed class AppSetValidator : IValidator<AppSet>
+{
+    public ValueTask<AdmissionResult> CreateAsync(AppSet set, AdmissionContext ctx, CancellationToken ct) =>
+        new(set.Spec.Replicas > 50 ? AdmissionResult.Deny("replicas must be ≤ 50") : AdmissionResult.Allow());
+}
+
+public sealed class AppSetDefaulter : IMutator<AppSet>
+{
+    public ValueTask<AppSet> CreateAsync(AppSet set, AdmissionContext ctx, CancellationToken ct)
+    {
+        set.Spec.Image ??= "registry.k8s.io/pause:3.10";
+        return new(set);                                       // the JSON patch is computed for you
+    }
+}
+
+public sealed class AppSetV1Converter : IConverter<AppSetV1, AppSetV2>   // v2 = hub (storage) version
+{
+    public AppSetV2 ToHub(AppSetV1 v1) => ...;
+    public AppSetV1 FromHub(AppSetV2 v2) => ...;
+}
+
+builder.Services.AddKubernetesOperator()
+    .AddValidator<AppSetValidator>()
+    .AddMutator<AppSetDefaulter>()
+    .AddConverter<AppSetV1Converter>()
+    .Webhooks(w => { w.ServiceName = "appset-operator"; w.ServiceNamespace = "operators"; });
+app.MapKubernetesWebhooks();     // /validate/samples.steeltoe.io/v1/appsets, /mutate/..., /convert/samples.steeltoe.io/appsets
+```
+
+- **Validation**: create, update (old and new) and delete (add `DELETE` to `Operations`); allow, deny with a message and status code, warnings; `AdmissionContext` carries the operation, user and `DryRun`.
+- **Mutation**: the handler gets a private copy and returns the object to persist; the package sends the JSON patch of what changed.
+- **Conversion**: hub and spoke, a batch of objects per request, one endpoint per resource for all its converters.
+- Handlers are resolved per request from dependency injection and are plain classes to unit-test.
+- In manifest mode (`InformersGenerateManifests`) the operator app also writes `webhooks/validating.yaml`, `webhooks/mutating.yaml` (with service, path, failure policy, side effects and timeout) and `webhooks/conversion.yaml`, a merge patch per CRD setting `spec.conversion`.
+- TLS is the deployment's job (cert-manager or a mounted secret; `CaBundle` for a fixed CA).
+
 ### Metadata-only and untyped informers
 
 - `informers.MetadataOnly<V1Secret>()` requests the API server's `PartialObjectMetadata` representation: labels, annotations, owner references and finalizers, but no data, `spec` or `status`.
@@ -253,7 +295,7 @@ InformerJson.AddResolver(AppJsonContext.Default);
 
 `KubernetesGenericClient` (`IKubernetesGenericClient`) reads and writes any resource through the same metadata: `GetAsync`, `ListAsync`, `CreateAsync`, `ReplaceAsync` (optionally `/status`), `PatchAsync`, `ApplyAsync` (server-side apply), `DeleteAsync` (with a UID precondition) and discovery (`GetResourceInfoAsync`: scope, status and scale subresources). Errors are `HttpOperationException`s: check them with `IsNotFound()`, `IsConflict()`, `IsAlreadyExists()` and `IsGone()`.
 
-`samples/AotSmoke` is published as NativeAOT in CI and run against a kind cluster. KubernetesClient 21 itself isn't trim-annotated: it reports trim warnings, and loading a kubeconfig file fails under NativeAOT (its YAML parsing uses reflection), so AOT apps use the in-cluster configuration or set `KubernetesClientConfiguration` properties directly.
+`samples/AotSmoke` is published as NativeAOT in CI and run against a kind cluster: informers, the generic client, an operator-hosted controller and the webhooks. KubernetesClient 21 itself isn't trim-annotated: it reports trim warnings, and loading a kubeconfig file fails under NativeAOT (its YAML parsing uses reflection), so AOT apps use the in-cluster configuration or set `KubernetesClientConfiguration` properties directly.
 
 ### Diagnostics
 

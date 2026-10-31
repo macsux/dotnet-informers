@@ -12,6 +12,81 @@ using Steeltoe.Informers.KubernetesBase;
 
 namespace Steeltoe.Informers.Operator
 {
+    /// <summary>A manifest the operator writes in manifest mode, next to its RBAC role (e.g. webhook configurations).</summary>
+    public interface IOperatorManifest
+    {
+        /// <summary>The files to write: a path relative to the manifest output directory, and the content.</summary>
+        IEnumerable<(string Path, string Content)> Generate();
+    }
+
+    /// <summary>Writes JSON (e.g. a Kubernetes model serialized through <c>InformerJson</c>) as block-style YAML, without reflection.</summary>
+    public static class ManifestYaml
+    {
+        public static string Write(System.Text.Json.Nodes.JsonNode node)
+        {
+            var sb = new StringBuilder();
+            WriteNode(sb, node, 0, inSequence: false);
+            return sb.ToString();
+        }
+
+        private static void WriteNode(StringBuilder sb, System.Text.Json.Nodes.JsonNode node, int indent, bool inSequence)
+        {
+            switch (node)
+            {
+                case System.Text.Json.Nodes.JsonObject obj when obj.Count > 0:
+                    var first = true;
+                    foreach (var (key, value) in obj)
+                    {
+                        if (!(first && inSequence))
+                            sb.Append(' ', indent);
+                        first = false;
+                        sb.Append(Scalar(key)).Append(':');
+                        WriteValue(sb, value, indent);
+                    }
+
+                    break;
+                case System.Text.Json.Nodes.JsonArray array when array.Count > 0:
+                    foreach (var item in array)
+                    {
+                        sb.Append(' ', indent).Append("- ");
+                        if (item is System.Text.Json.Nodes.JsonObject { Count: > 0 } || item is System.Text.Json.Nodes.JsonArray { Count: > 0 })
+                            WriteNode(sb, item, indent + 2, inSequence: true);
+                        else
+                            sb.Append(Scalar(item)).Append('\n');
+                    }
+
+                    break;
+                default:
+                    sb.Append(' ', indent).Append(Scalar(node)).Append('\n');
+                    break;
+            }
+        }
+
+        private static void WriteValue(StringBuilder sb, System.Text.Json.Nodes.JsonNode value, int indent)
+        {
+            if (value is System.Text.Json.Nodes.JsonObject { Count: > 0 } || value is System.Text.Json.Nodes.JsonArray { Count: > 0 })
+            {
+                sb.Append('\n');
+                WriteNode(sb, value, value is System.Text.Json.Nodes.JsonArray ? indent : indent + 2, inSequence: false);
+            }
+            else
+            {
+                sb.Append(' ').Append(Scalar(value)).Append('\n');
+            }
+        }
+
+        // JSON scalars are valid YAML flow scalars; strings are always quoted, so nothing is misread (yes, 1.0, ~)
+        private static string Scalar(System.Text.Json.Nodes.JsonNode node) => node switch
+        {
+            null => "null",
+            System.Text.Json.Nodes.JsonObject => "{}",
+            System.Text.Json.Nodes.JsonArray => "[]",
+            _ => node.ToJsonString(),
+        };
+
+        private static string Scalar(string key) => System.Text.Json.Nodes.JsonValue.Create(key)!.ToJsonString();
+    }
+
     /// <summary>The RBAC rules the operator's controllers need, as a <c>ClusterRole</c> manifest.</summary>
     public static class RbacManifest
     {
@@ -60,10 +135,12 @@ namespace Steeltoe.Informers.Operator
         private readonly OperatorOptions _options;
         private readonly IHostApplicationLifetime _lifetime;
         private readonly ILogger _logger;
+        private readonly IEnumerable<IOperatorManifest> _manifests;
 
-        public ManifestWriterService(OperatorStatus status, OperatorOptions options, IHostApplicationLifetime lifetime = null, ILoggerFactory loggerFactory = null)
+        public ManifestWriterService(OperatorStatus status, OperatorOptions options, IEnumerable<IOperatorManifest> manifests, IHostApplicationLifetime lifetime = null, ILoggerFactory loggerFactory = null)
         {
             _status = status;
+            _manifests = manifests;
             _options = options;
             _lifetime = lifetime;
             _logger = loggerFactory?.CreateLogger("Steeltoe.Informers.Operator") ?? NullLogger.Instance;
@@ -73,16 +150,26 @@ namespace Steeltoe.Informers.Operator
         {
             if (_options.ManifestOutput == null)
                 return Task.CompletedTask;
-            var file = Path.Combine(_options.ManifestOutput, "rbac", "role.yaml");
-            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-            var yaml = RbacManifest.Build(_status, _options, _options.RbacRoleName);
-            if (!File.Exists(file) || File.ReadAllText(file) != yaml)
-                File.WriteAllText(file, yaml);
-            _logger.LogInformation("Wrote {File}", file);
+            Write(Path.Combine("rbac", "role.yaml"), RbacManifest.Build(_status, _options, _options.RbacRoleName));
+            foreach (var manifest in _manifests)
+            {
+                foreach (var (path, content) in manifest.Generate())
+                    Write(path, content);
+            }
+
             _lifetime?.StopApplication();
             return Task.CompletedTask;
         }
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        private void Write(string relativePath, string content)
+        {
+            var file = Path.Combine(_options.ManifestOutput, relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            if (!File.Exists(file) || File.ReadAllText(file) != content)
+                File.WriteAllText(file, content);
+            _logger.LogInformation("Wrote {File}", file);
+        }
     }
 }

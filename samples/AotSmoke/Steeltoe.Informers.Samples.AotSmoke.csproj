@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
@@ -10,9 +10,6 @@
     <WarningsNotAsErrors>IL2104;IL3053</WarningsNotAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\Operator\Steeltoe.Informers.Operator.csproj" />
+    <ProjectReference Include="..\..\src\Operator.Web\Steeltoe.Informers.Operator.Web.csproj" />
   </ItemGroup>
 </Project>

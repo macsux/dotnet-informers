@@ -5,3 +5,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]
 [assembly: InternalsVisibleTo("Steeltoe.Informers.Operator")]
 [assembly: InternalsVisibleTo("Steeltoe.Informers.Operator.Tests")]
+[assembly: InternalsVisibleTo("Steeltoe.Informers.Operator.Web")]
+[assembly: InternalsVisibleTo("Steeltoe.Informers.Operator.Web.Tests")]
