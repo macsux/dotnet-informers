@@ -174,6 +174,41 @@ namespace Steeltoe.Informers.Operator.Tests
         }
 
         [Fact]
+        public async Task ClusterScopedOwner_ExpectationsAreMetWhenNamespacedChildrenAreObserved()
+        {
+            var namespaces = GroupVersionResource.For<V1Namespace>();
+            _api.ClusterScoped(namespaces);
+            _client.ClusterScoped.Add(namespaces);
+            _api.Put(namespaces, new V1Namespace { Metadata = new V1ObjectMeta { Name = "team", Uid = "team-uid" } });
+            var builder = new ControllerBuilder<V1Namespace>("namespaces").AllNamespaces().Owns<V1ConfigMap>();
+            var runner = new ControllerRunner<V1Namespace>(builder, new ControllerServices
+            {
+                Informers = new KubernetesInformerFactory(_api, retryPolicy: new RetryPolicy((_, _) => true, _ => TimeSpan.FromMilliseconds(10))),
+                Client = _client,
+                Events = NullEventRecorder.Instance,
+            }, (_, _) => Task.FromResult(ReconcileResult.Done), null);
+            runner.Expectations.ExpectCreations("team", 1); // what CreateOwnedAsync records for the cluster-scoped owner
+
+            await using var e = (await runner.BuildAsync(Ct)).GetAsyncEnumerator(Ct);
+            while (await e.MoveNextAsync().TimeoutIfNotDebugging() && !e.Current.EventFlags.HasFlag(EventTypeFlags.ResetEnd))
+            {
+            }
+
+            _api.Put(ConfigMaps, new V1ConfigMap
+            {
+                Metadata = new V1ObjectMeta
+                {
+                    Name = "child",
+                    NamespaceProperty = "team",
+                    OwnerReferences = new List<V1OwnerReference> { new V1OwnerReference { ApiVersion = "v1", Kind = "Namespace", Name = "team", Uid = "team-uid", Controller = true } },
+                },
+            });
+            (await e.MoveNextAsync().TimeoutIfNotDebugging()).Should().BeTrue();
+            runner.CreateContext("team", ReconcileTrigger.Change, e.Current.Value).Owned<V1ConfigMap>().Should().ContainSingle();
+            runner.Expectations.IsSatisfied("team").Should().BeTrue();
+        }
+
+        [Fact]
         public async Task Deleted_ForgetsTheKey()
         {
             string deletedKey = null;

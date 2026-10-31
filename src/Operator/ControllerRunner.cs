@@ -65,6 +65,8 @@ namespace Steeltoe.Informers.Operator
 
         public string Name => _builder.ControllerName;
 
+        internal Expectations Expectations => _expectations;
+
         public Task Synced => _synced.Task;
 
         private string Namespace => _builder.AllNamespacesScope ? null : _builder.NamespaceScope ?? _services.DefaultNamespace;
@@ -113,6 +115,7 @@ namespace Steeltoe.Informers.Operator
                 Expectations = _expectations,
                 PrimaryApiVersion = apiVersion,
                 PrimaryKind = kind,
+                PrimaryNamespaced = relationships == 0 || (await _services.Client.GetResourceInfoAsync(GroupVersionResource.For<T>(), cancellationToken).ConfigureAwait(false)).Namespaced,
             };
             foreach (var relationship in _builder.Relationships)
                 state = await relationship.JoinAsync(state, scope, cancellationToken).ConfigureAwait(false);

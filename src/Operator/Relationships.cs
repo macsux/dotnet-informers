@@ -61,6 +61,9 @@ namespace Steeltoe.Informers.Operator
         public Expectations Expectations { get; init; }
         public string PrimaryApiVersion { get; init; }
         public string PrimaryKind { get; init; }
+
+        /// <summary>Whether the primary is namespaced (its key is <c>namespace/name</c>) or cluster-scoped (<c>name</c>).</summary>
+        public bool PrimaryNamespaced { get; init; } = true;
     }
 
     internal abstract class Relationship<T> where T : class, IKubernetesObject<V1ObjectMeta>
@@ -131,9 +134,11 @@ namespace Steeltoe.Informers.Operator
         {
             var kind = scope.PrimaryKind;
             var group = GroupOf(scope.PrimaryApiVersion);
-            // observed before the join sees them, so expectations are met by the time a reconcile sees the children
+            var ownerNamespaced = scope.PrimaryNamespaced;
+            // observed before the join sees them, so expectations are met by the time a reconcile sees the children; keyed like the primary
+            // (a cluster-scoped owner's key is its name, whatever the child's namespace)
             var children = scope.Expectations.Observe(await SourceAsync(scope, cancellationToken).ConfigureAwait(false),
-                c => ControllerOwners(c, kind, group).Select(x => KubernetesObjectExtensions.ObjectKey(c.Metadata.NamespaceProperty, x.Name)));
+                c => ControllerOwners(c, kind, group).Select(x => ownerNamespaced ? KubernetesObjectExtensions.ObjectKey(c.Metadata.NamespaceProperty, x.Name) : x.Name));
             var index = Index;
             return state.GroupJoin(children, s => s.Primary.Metadata.Uid, c => ControllerOwners(c, kind, group).Select(x => x.Uid),
                 (s, cs) => s.With(index, cs.ToList<object>()));

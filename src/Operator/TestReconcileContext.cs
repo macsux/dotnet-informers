@@ -86,6 +86,9 @@ namespace Steeltoe.Informers.Operator
 
         public bool HasStatus { get; set; } = true;
 
+        /// <summary>Resources discovery reports as cluster-scoped.</summary>
+        public HashSet<GroupVersionResource> ClusterScoped { get; } = new HashSet<GroupVersionResource>();
+
         public IReadOnlyList<RecordedWrite> Writes
         {
             get
@@ -195,7 +198,7 @@ namespace Steeltoe.Informers.Operator
             Task.FromResult(new KubernetesResourceInfo(new GroupVersionResource(string.Empty, "v1", "objects"), obj.TypeMeta().Kind, true, HasStatus, false));
 
         public Task<KubernetesResourceInfo> GetResourceInfoAsync(GroupVersionResource resource, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new KubernetesResourceInfo(resource, null, true, HasStatus, false));
+            Task.FromResult(new KubernetesResourceInfo(resource, null, !ClusterScoped.Contains(resource), HasStatus, false));
 
         private void Record(string verb, IKubernetesObject<V1ObjectMeta> obj, bool status, string body)
         {
