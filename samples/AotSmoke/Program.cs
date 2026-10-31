@@ -114,8 +114,9 @@ namespace Steeltoe.Informers.Samples.AotSmoke
             services.AddKubernetesOperator(o => o.Namespace(ns).Events(e => e.ReportingController = "smoke.steeltoe.io/mirror"))
                 .AddController<MirrorController>();
             await using var provider = services.BuildServiceProvider();
-            var host = provider.GetServices<IHostedService>().Single();
-            await host.StartAsync(ct);
+            var hosts = provider.GetServices<IHostedService>().ToList();
+            foreach (var host in hosts)
+                await host.StartAsync(ct);
             try
             {
                 await client.CreateAsync(new V1ConfigMap { Metadata = new V1ObjectMeta { Name = "cm", NamespaceProperty = ns }, Data = new Dictionary<string, string> { ["k"] = "v" } }, cancellationToken: ct);
@@ -136,7 +137,8 @@ namespace Steeltoe.Informers.Samples.AotSmoke
             }
             finally
             {
-                await host.StopAsync(CancellationToken.None);
+                foreach (var host in hosts)
+                    await host.StopAsync(CancellationToken.None);
             }
         }
 

@@ -2,6 +2,8 @@
   <ItemGroup>
     <!-- libraries -->
     <PackageVersion Include="KubernetesClient" Version="21.0.8" />
+    <!-- build-time CRD generation only (src/Crds runs in its own process); never referenced by the runtime packages -->
+    <PackageVersion Include="KubeOps.Transpiler" Version="13.3.5" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.13" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />

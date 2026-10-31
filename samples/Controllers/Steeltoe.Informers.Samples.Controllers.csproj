@@ -2,9 +2,19 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+  <PropertyGroup>
+    <!-- Crds/appsets.yaml is generated from AppSet on build (widgets.yaml is hand-written: Widget has no C# type) -->
+    <InformersGenerateManifests>true</InformersGenerateManifests>
+    <InformersCrdsOutput>$(MSBuildProjectDirectory)/Crds</InformersCrdsOutput>
+    <InformersCrdsTool>$(MSBuildThisFileDirectory)../../src/Crds/bin/$(Configuration)/net10.0/Steeltoe.Informers.Crds.dll</InformersCrdsTool>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Operator\Steeltoe.Informers.Operator.csproj" />
+    <ProjectReference Include="..\..\src\Entities\Steeltoe.Informers.Entities.csproj" />
+    <!-- built first so its targets can run it -->
+    <ProjectReference Include="..\..\src\Crds\Steeltoe.Informers.Crds.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <Import Project="..\..\src\Crds\build\Steeltoe.Informers.Crds.targets" />
   <ItemGroup>
     <EmbeddedResource Include="Crds\*.yaml" LogicalName="%(Filename)%(Extension)" />
   </ItemGroup>

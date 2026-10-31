@@ -27,6 +27,9 @@ namespace Steeltoe.Informers.Operator
         internal bool EventsEnabled { get; private set; } = true;
         internal bool AutomaticEventsEnabled { get; private set; } = true;
         internal TimeSpan SyncTimeout { get; private set; } = TimeSpan.FromMinutes(1);
+        internal string ManifestOutput { get; } = Environment.GetEnvironmentVariable(RbacManifest.OutputVariable) is { Length: > 0 } output ? output : null;
+        internal string RbacRoleName { get; private set; } = "operator";
+        internal (System.Reflection.Assembly Assembly, bool Overwrite)? CrdInstall { get; set; }
 
         /// <summary>Adds the app's source-generated JSON metadata for the types it watches (see <see cref="InformerJson" />).</summary>
         public OperatorOptions Json(IJsonTypeInfoResolver resolver)
@@ -74,6 +77,13 @@ namespace Steeltoe.Informers.Operator
             return this;
         }
 
+        /// <summary>The name of the generated <c>ClusterRole</c> (default <c>operator</c>).</summary>
+        public OperatorOptions RbacRole(string name)
+        {
+            RbacRoleName = string.IsNullOrEmpty(name) ? throw new ArgumentNullException(nameof(name)) : name;
+            return this;
+        }
+
         /// <summary>How long startup waits for the controllers' informers to sync before going on regardless (default one minute).</summary>
         public OperatorOptions WaitForSync(TimeSpan timeout)
         {
@@ -85,9 +95,27 @@ namespace Steeltoe.Informers.Operator
     /// <summary>Registers controllers with the operator.</summary>
     public sealed class OperatorBuilder
     {
-        internal OperatorBuilder(IServiceCollection services) => Services = services;
+        private readonly OperatorOptions _options;
+
+        internal OperatorBuilder(IServiceCollection services, OperatorOptions options)
+        {
+            Services = services;
+            _options = options;
+        }
 
         public IServiceCollection Services { get; }
+
+        /// <summary>
+        ///     Development only: before the controllers start, creates the CustomResourceDefinitions embedded as YAML resources in
+        ///     <paramref name="assembly" /> (default: the entry assembly), e.g. the generated <c>deploy/crds/*.yaml</c> added as
+        ///     <c>EmbeddedResource</c>. Existing ones are replaced only with <paramref name="overwriteExisting" />. Needs permission to manage CRDs,
+        ///     which an operator shouldn't have in production; parses YAML with KubernetesClient, so it isn't available in NativeAOT apps.
+        /// </summary>
+        public OperatorBuilder InstallCrds(System.Reflection.Assembly assembly = null, bool overwriteExisting = false)
+        {
+            _options.CrdInstall = (assembly ?? System.Reflection.Assembly.GetEntryAssembly(), overwriteExisting);
+            return this;
+        }
 
         /// <summary>Registers a controller class (resolved with a scope per reconcile).</summary>
         public OperatorBuilder AddController<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TController>()
@@ -108,9 +136,15 @@ namespace Steeltoe.Informers.Operator
         }
     }
 
+    /// <summary>What a controller is, without running it: its name and the permissions it needs.</summary>
+    internal sealed record ControllerDescription(string Name, IReadOnlyList<(GroupVersionResource Resource, IReadOnlyList<string> Verbs)> Permissions);
+
     internal abstract class ControllerRegistration
     {
         public abstract IControllerRunner CreateRunner(IServiceProvider services, ControllerServices controllerServices);
+
+        /// <summary>Runs only the controller's <c>Configure</c> (no cluster needed).</summary>
+        public abstract ControllerDescription Describe(IServiceProvider services);
     }
 
     internal sealed class ClassControllerRegistration<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TController> : ControllerRegistration
@@ -120,6 +154,12 @@ namespace Steeltoe.Informers.Operator
         {
             using var scope = services.GetRequiredService<IServiceScopeFactory>().CreateScope();
             return scope.ServiceProvider.GetRequiredService<TController>().CreateRunner(services, controllerServices, typeof(TController));
+        }
+
+        public override ControllerDescription Describe(IServiceProvider services)
+        {
+            using var scope = services.GetRequiredService<IServiceScopeFactory>().CreateScope();
+            return scope.ServiceProvider.GetRequiredService<TController>().Describe(typeof(TController));
         }
     }
 
@@ -135,19 +175,31 @@ namespace Steeltoe.Informers.Operator
             _configure(builder);
             return new ControllerRunner<T>(builder, controllerServices, builder.ReconcileDelegate, builder.DeletedDelegate);
         }
+
+        public override ControllerDescription Describe(IServiceProvider services)
+        {
+            var builder = new ControllerBuilder<T>(typeof(T).Name);
+            _configure(builder);
+            return new ControllerDescription(builder.ControllerName, builder.Permissions());
+        }
     }
 
     /// <summary>The operator's controllers, for health checks and RBAC generation.</summary>
     public sealed class OperatorStatus
     {
         private readonly Lazy<IReadOnlyList<IControllerRunner>> _runners;
+        private readonly Lazy<IReadOnlyList<ControllerDescription>> _descriptions;
 
-        internal OperatorStatus(Lazy<IReadOnlyList<IControllerRunner>> runners) => _runners = runners;
+        internal OperatorStatus(Lazy<IReadOnlyList<IControllerRunner>> runners, Lazy<IReadOnlyList<ControllerDescription>> descriptions)
+        {
+            _runners = runners;
+            _descriptions = descriptions;
+        }
 
         internal IReadOnlyList<IControllerRunner> Runners => _runners.Value;
 
         /// <summary>The names of the registered controllers.</summary>
-        public IReadOnlyList<string> Controllers => Runners.Select(x => x.Name).ToList();
+        public IReadOnlyList<string> Controllers => _descriptions.Value.Select(x => x.Name).ToList();
 
         /// <summary>Whether every controller's informers delivered their initial state.</summary>
         public bool IsSynced => Runners.All(x => x.Synced.IsCompleted);
@@ -157,8 +209,8 @@ namespace Steeltoe.Informers.Operator
 
         /// <summary>The resources the controllers read and write, with the verbs they need (the basis of their RBAC rules).</summary>
         public IReadOnlyList<(GroupVersionResource Resource, IReadOnlyList<string> Verbs)> Resources =>
-            Runners.SelectMany(x => x.Resources)
-                .GroupBy(x => GroupVersionResource.For(x.Type))
+            _descriptions.Value.SelectMany(x => x.Permissions)
+                .GroupBy(x => x.Resource)
                 .Select(x => (x.Key, (IReadOnlyList<string>)x.SelectMany(r => r.Verbs).Distinct().ToList()))
                 .ToList();
     }
@@ -173,15 +225,22 @@ namespace Steeltoe.Informers.Operator
         private readonly OperatorOptions _options;
         private readonly ILogger _logger;
 
-        public OperatorHostedService(OperatorStatus status, OperatorOptions options, ILoggerFactory loggerFactory = null)
+        private readonly IKubernetesGenericClient _client;
+
+        public OperatorHostedService(OperatorStatus status, OperatorOptions options, IKubernetesGenericClient client, ILoggerFactory loggerFactory = null)
         {
             _status = status;
             _options = options;
+            _client = client;
             _logger = loggerFactory?.CreateLogger("Steeltoe.Informers.Operator") ?? NullLogger.Instance;
         }
 
         public override async Task StartAsync(CancellationToken cancellationToken)
         {
+            if (_options.ManifestOutput != null)
+                return; // manifest mode: ManifestWriterService writes them and stops the app
+            if (_options.CrdInstall is { } install)
+                await CrdInstaller.InstallAsync(_client, install.Assembly, install.Overwrite, _logger, cancellationToken).ConfigureAwait(false);
             await base.StartAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -245,28 +304,36 @@ namespace Steeltoe.Informers.Operator
             services.TryAddSingleton<IEventRecorder>(container => options.EventsEnabled
                 ? new KubernetesEventRecorder(container.GetRequiredService<IKubernetesGenericClient>(), options.EventOptions, container.GetService<ILoggerFactory>()?.CreateLogger("Steeltoe.Informers.Events"))
                 : new LoggingEventRecorder(container.GetService<ILoggerFactory>()?.CreateLogger("Steeltoe.Informers.Events") ?? NullLogger.Instance));
-            services.TryAddSingleton(container =>
+            services.TryAddSingleton(container => new OperatorStatus(
+                // the runners need a cluster; descriptions (names, RBAC) only run Configure
+                new Lazy<IReadOnlyList<IControllerRunner>>(() =>
+                {
+                    var controllerServices = CreateControllerServices(container, options);
+                    return container.GetServices<ControllerRegistration>().Select(x => x.CreateRunner(container, controllerServices)).ToList();
+                }),
+                new Lazy<IReadOnlyList<ControllerDescription>>(() => container.GetServices<ControllerRegistration>().Select(x => x.Describe(container)).ToList())));
+            services.AddHostedService<ManifestWriterService>();
+            services.AddHostedService<OperatorHostedService>();
+            return new OperatorBuilder(services, options);
+        }
+
+        private static ControllerServices CreateControllerServices(IServiceProvider container, OperatorOptions options)
+        {
+            var leader = options.Leader;
+            var loggerFactory = container.GetService<ILoggerFactory>();
+            return new ControllerServices
             {
-                var leader = options.Leader;
-                ILeaderElection election = leader == null
+                Informers = container.GetRequiredService<IKubernetesInformerFactory>(),
+                Client = container.GetRequiredService<IKubernetesGenericClient>(),
+                Events = container.GetRequiredService<IEventRecorder>(),
+                LoggerFactory = loggerFactory,
+                DefaultNamespace = options.DefaultNamespace,
+                LeaderElection = leader == null
                     ? null
                     : new KubernetesLeaderElection(container.GetRequiredService<IKubernetes>(), leader.Value.Namespace, leader.Value.LeaseName, leader.Value.Identity,
-                        logger: container.GetService<ILoggerFactory>()?.CreateLogger("Steeltoe.Informers.LeaderElection"));
-                var controllerServices = new ControllerServices
-                {
-                    Informers = container.GetRequiredService<IKubernetesInformerFactory>(),
-                    Client = container.GetRequiredService<IKubernetesGenericClient>(),
-                    Events = container.GetRequiredService<IEventRecorder>(),
-                    LoggerFactory = container.GetService<ILoggerFactory>(),
-                    DefaultNamespace = options.DefaultNamespace,
-                    LeaderElection = election,
-                    AutomaticEvents = options.AutomaticEventsEnabled,
-                };
-                return new OperatorStatus(new Lazy<IReadOnlyList<IControllerRunner>>(() =>
-                    container.GetServices<ControllerRegistration>().Select(x => x.CreateRunner(container, controllerServices)).ToList()));
-            });
-            services.AddHostedService<OperatorHostedService>();
-            return new OperatorBuilder(services);
+                        logger: loggerFactory?.CreateLogger("Steeltoe.Informers.LeaderElection")),
+                AutomaticEvents = options.AutomaticEventsEnabled,
+            };
         }
     }
 }

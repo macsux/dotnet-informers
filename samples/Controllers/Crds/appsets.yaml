@@ -1,38 +1,63 @@
+# generated from C# entity types by Steeltoe.Informers.Crds; don't edit
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   name: appsets.samples.steeltoe.io
 spec:
   group: samples.steeltoe.io
-  scope: Namespaced
   names:
-    plural: appsets
-    singular: appset
     kind: AppSet
+    listKind: AppSetList
+    plural: appsets
+    shortNames:
+    - as
+    singular: appset
+  scope: Namespaced
   versions:
-    - name: v1
-      served: true
-      storage: true
-      subresources:
-        status: {}
-      schema:
-        openAPIV3Schema:
-          type: object
-          properties:
-            spec:
-              type: object
-              properties:
-                replicas:
-                  type: integer
-                  minimum: 0
-                image:
-                  type: string
-            status:
-              type: object
-              properties:
-                replicas:
-                  type: integer
-                readyReplicas:
-                  type: integer
-                observedGeneration:
-                  type: integer
+  - additionalPrinterColumns:
+    - description: Pods to keep running.
+      format: int32
+      jsonPath: .spec.replicas
+      name: Desired
+      priority: 0
+      type: integer
+    - format: int32
+      jsonPath: .status.readyReplicas
+      name: Ready
+      priority: 0
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Keeps a number of pods running.
+        properties:
+          spec:
+            properties:
+              image:
+                description: 'The container image (default: the pause image).'
+                type: string
+              replicas:
+                description: Pods to keep running.
+                exclusiveMinimum: false
+                format: int32
+                minimum: 0.0
+                type: integer
+            type: object
+          status:
+            properties:
+              observedGeneration:
+                format: int64
+                nullable: true
+                type: integer
+              readyReplicas:
+                format: int32
+                type: integer
+              replicas:
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

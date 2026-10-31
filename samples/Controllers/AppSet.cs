@@ -1,11 +1,14 @@
 using System.Text.Json.Serialization;
 using k8s;
 using k8s.Models;
+using Steeltoe.Informers.Entities;
 
 namespace Steeltoe.Informers.Samples.Controllers
 {
     /// <summary>A custom resource that keeps <see cref="AppSetSpec.Replicas" /> pods running (see <c>Crds/appsets.yaml</c>).</summary>
     [KubernetesEntity(Group = "samples.steeltoe.io", ApiVersion = "v1", Kind = "AppSet", PluralName = "appsets")]
+    [KubernetesEntityShortNames("as")]
+    [Description("Keeps a number of pods running.")]
     public class AppSet : IKubernetesObject<V1ObjectMeta>, ISpec<AppSetSpec>, IStatus<AppSetStatus>
     {
         public const string Finalizer = "samples.steeltoe.io/pods";
@@ -30,9 +33,13 @@ namespace Steeltoe.Informers.Samples.Controllers
     public class AppSetSpec
     {
         [JsonPropertyName("replicas")]
+        [Description("Pods to keep running.")]
+        [RangeMinimum(0)]
+        [AdditionalPrinterColumn(name: "Desired")]
         public int Replicas { get; set; }
 
         [JsonPropertyName("image")]
+        [Description("The container image (default: the pause image).")]
         public string Image { get; set; }
     }
 
@@ -42,6 +49,7 @@ namespace Steeltoe.Informers.Samples.Controllers
         public int Replicas { get; set; }
 
         [JsonPropertyName("readyReplicas")]
+        [AdditionalPrinterColumn(name: "Ready")]
         public int ReadyReplicas { get; set; }
 
         [JsonPropertyName("observedGeneration")]

@@ -33,6 +33,21 @@ namespace Steeltoe.Informers.Operator
         internal Func<ReconcileContext<T>, CancellationToken, Task<ReconcileResult>> ReconcileDelegate { get; private set; }
         internal Func<string, T, CancellationToken, Task> DeletedDelegate { get; private set; }
 
+        /// <summary>The resources (and subresources) the controller reads and writes, with the verbs it needs: the basis of its RBAC rules.</summary>
+        internal IReadOnlyList<(GroupVersionResource Resource, IReadOnlyList<string> Verbs)> Permissions()
+        {
+            var primary = GroupVersionResource.For<T>();
+            var permissions = new List<(GroupVersionResource, IReadOnlyList<string>)>
+            {
+                (primary, new[] { "get", "list", "watch", "update", "patch" }),
+                (primary with { Resource = primary.Resource + "/status" }, new[] { "get", "update", "patch" }),
+                // owner references with blockOwnerDeletion need update on the owner's finalizers
+                (primary with { Resource = primary.Resource + "/finalizers" }, new[] { "update" }),
+            };
+            permissions.AddRange(Relationships.Select(x => (GroupVersionResource.For(x.OtherType), x.Verbs)));
+            return permissions;
+        }
+
         /// <summary>The name in logs, metrics, traces and events (default: the controller's type name).</summary>
         public ControllerBuilder<T> Named(string name)
         {

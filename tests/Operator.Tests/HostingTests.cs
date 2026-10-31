@@ -68,7 +68,7 @@ namespace Steeltoe.Informers.Operator.Tests
                     return Task.FromResult(ReconcileResult.Done);
                 }));
             await using var provider = services.BuildServiceProvider();
-            var hosted = provider.GetServices<IHostedService>().Single();
+            var hosted = provider.GetServices<IHostedService>().OfType<BackgroundService>().Single();
             await hosted.StartAsync(Ct);
             try
             {

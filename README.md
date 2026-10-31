@@ -9,6 +9,8 @@ An informer is a **level-triggered replica** of a collection of objects (e.g. ev
 - `Steeltoe.Informers.KubernetesBase`: the Kubernetes list/watch producer, filter pushdown, metadata-only and untyped informers, controller helpers.
 - `Steeltoe.Informers.KubernetesCore`: dependency injection registration.
 - `Steeltoe.Informers.Operator`: controller classes and their hosting, on top of the above.
+- `Steeltoe.Informers.Entities`: dependency-free attributes describing custom resources for CRD generation.
+- `Steeltoe.Informers.Crds`: build-time generation of CRDs (and, for operator apps, their RBAC role).
 
 ### The contract
 
@@ -183,6 +185,40 @@ public sealed class AppSetController(ILogger<AppSetController> logger) : Control
 - **Hosting**: one hosted service runs every controller. Startup waits (bounded by `WaitForSync`) for their informers to sync; a failing controller restarts with backoff without stopping the others; shutdown waits for running reconciles. Controllers are resolved with a scope per reconcile. `OperatorStatus` reports sync state and the resources and verbs each controller needs. A reconcile error records a `ReconcileError` warning event (`AutomaticEvents(false)` turns that off); `DisableEvents()` logs events instead.
 - **Tests**: `ReconcileContext.ForTest(obj).WithOwned(...).WithRelated(...)` runs a reconcile without informers or an API server and records its `Writes`.
 
+### CRDs and RBAC from C# types
+
+CRDs are generated at build time, never at runtime:
+
+```xml
+<PropertyGroup>
+  <InformersGenerateManifests>true</InformersGenerateManifests>   <!-- deploy/crds/*.yaml, and deploy/rbac/role.yaml for an operator app -->
+</PropertyGroup>
+```
+
+```csharp
+[KubernetesEntity(Group = "example.com", ApiVersion = "v1", Kind = "AppSet", PluralName = "appsets")]
+[KubernetesEntityShortNames("as")]
+public class AppSet : IKubernetesObject<V1ObjectMeta>, ISpec<AppSetSpec>, IStatus<AppSetStatus>   // Status → status subresource
+{ ... }
+
+public class AppSetSpec
+{
+    [Required, RangeMinimum(0), Description("Pods to keep running."), AdditionalPrinterColumn(name: "Desired")]
+    public int Replicas { get; set; }
+
+    [Pattern("^[a-z0-9./:-]+$")]
+    public string Image { get; set; }
+
+    [ValidationRule("self.size() <= 10", message: "at most 10 env vars")]
+    public Dictionary<string, string> Env { get; set; }
+}
+```
+
+- The generator runs KubeOps' Transpiler in its own process over the compiled assembly (through a `MetadataLoadContext`: no user code runs), so its dependencies never meet the app's. It covers structural schemas from C# types (`JsonPropertyName`, enums, nullability, lists, dictionaries, `IntOrString`, `ResourceQuantity`, embedded Kubernetes types), validation attributes, CEL rules, printer columns, status and scale subresources, short names, scope and multiple versions with one `[StorageVersion]`.
+- Entity classes reference only `Steeltoe.Informers.Entities`, whose attributes have the names and constructor shapes of KubeOps'; the Transpiler matches them by name. The generator applies the ones with enum arguments itself (`EntityScope`, `XListType`, `XMapType`, printer column priorities), and list map keys are `[ListMapKeys]` (KubeOps' `XListMapKeys` would be rejected next to a list type the Transpiler can't read). `tests/Crds.Tests` runs the Transpiler over every attribute, so a change on KubeOps' side fails the build.
+- For an operator app (`OutputType` Exe), the build then starts the app with `INFORMERS_MANIFESTS_OUTPUT` set: it writes the `ClusterRole` its controllers need (their resources and verbs, status and finalizer subresources, Events, Leases with leader election) and exits before connecting to a cluster. `OperatorStatus.Resources` lists the same at runtime.
+- `.InstallCrds()` on the operator builder creates the CRDs embedded as YAML resources before the controllers start: for development only.
+
 ### Metadata-only and untyped informers
 
 - `informers.MetadataOnly<V1Secret>()` requests the API server's `PartialObjectMetadata` representation: labels, annotations, owner references and finalizers, but no data, `spec` or `status`.
@@ -232,7 +268,7 @@ The library reports through the meter and activity source named `Steeltoe.Inform
 `samples/Controllers` holds controllers built on informers:
 
 - deployment readiness (GroupJoin + Resync)
-- an `AppSet` CRD replica controller as a `Controller<AppSet>` (owned pods, finalizer, status, requeues, conflicts)
+- an `AppSet` CRD replica controller as a `Controller<AppSet>` (owned pods, finalizer, status, requeues, conflicts), with its CRD generated from the C# type; `samples/AppSetOperator` hosts it and generates its RBAC role
 - metadata-only Secret usage and orphan cleanup
 - an untyped `Widget` CRD
 - node pod counts with field selectors

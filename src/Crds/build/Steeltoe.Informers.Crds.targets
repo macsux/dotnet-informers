@@ -1,0 +1,24 @@
+<Project>
+  <!--
+    R1.6/R1.7: manifests at build time, never at runtime.
+      InformersGenerateManifests=true   writes a CRD per custom resource of the project into $(InformersCrdsOutput) (default deploy/crds),
+                                        and for an operator app (OutputType Exe) the ClusterRole its controllers need into $(InformersManifestsOutput)/rbac.
+    The CRD generator runs in its own process over the compiled assembly (no user code runs); the RBAC step starts the app with
+    INFORMERS_MANIFESTS_OUTPUT set, which writes the manifest and exits before connecting to a cluster (InformersGenerateRbac=false skips it).
+  -->
+  <PropertyGroup>
+    <InformersGenerateManifests Condition="'$(InformersGenerateManifests)' == ''">false</InformersGenerateManifests>
+    <InformersManifestsOutput Condition="'$(InformersManifestsOutput)' == ''">$(MSBuildProjectDirectory)/deploy</InformersManifestsOutput>
+    <InformersCrdsOutput Condition="'$(InformersCrdsOutput)' == ''">$(InformersManifestsOutput)/crds</InformersCrdsOutput>
+    <InformersGenerateRbac Condition="'$(InformersGenerateRbac)' == '' and '$(OutputType)' == 'Exe'">true</InformersGenerateRbac>
+    <InformersCrdsTool Condition="'$(InformersCrdsTool)' == ''">$(MSBuildThisFileDirectory)../tools/net10.0/any/Steeltoe.Informers.Crds.dll</InformersCrdsTool>
+  </PropertyGroup>
+
+  <Target Name="InformersGenerateCrds" AfterTargets="Build" Condition="'$(InformersGenerateManifests)' == 'true'">
+    <Exec Command="dotnet &quot;$(InformersCrdsTool)&quot; --assembly &quot;$(TargetPath)&quot; --output &quot;$(InformersCrdsOutput)&quot;" />
+  </Target>
+
+  <Target Name="InformersGenerateRbac" AfterTargets="InformersGenerateCrds" Condition="'$(InformersGenerateManifests)' == 'true' and '$(InformersGenerateRbac)' == 'true'">
+    <Exec Command="dotnet &quot;$(TargetPath)&quot;" EnvironmentVariables="INFORMERS_MANIFESTS_OUTPUT=$(InformersManifestsOutput)" />
+  </Target>
+</Project>

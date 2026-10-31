@@ -36,6 +36,13 @@ namespace Steeltoe.Informers.Operator
         /// </summary>
         public virtual Task DeletedAsync(string key, T lastKnown, CancellationToken cancellationToken) => Task.CompletedTask;
 
+        ControllerDescription IController.Describe(Type controllerType)
+        {
+            var builder = new ControllerBuilder<T>(controllerType.Name);
+            Configure(builder);
+            return new ControllerDescription(builder.ControllerName, builder.Permissions());
+        }
+
         IControllerRunner IController.CreateRunner(IServiceProvider services, ControllerServices controllerServices, Type controllerType)
         {
             var builder = new ControllerBuilder<T>(controllerType.Name);
@@ -77,5 +84,7 @@ namespace Steeltoe.Informers.Operator
     public interface IController
     {
         internal IControllerRunner CreateRunner(IServiceProvider services, ControllerServices controllerServices, Type controllerType);
+
+        internal ControllerDescription Describe(Type controllerType);
     }
 }

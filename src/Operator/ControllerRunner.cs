@@ -20,9 +20,6 @@ namespace Steeltoe.Informers.Operator
         /// <summary>Completes once the controller's informers delivered their initial state.</summary>
         Task Synced { get; }
 
-        /// <summary>The resources the controller reads and writes, for RBAC.</summary>
-        IReadOnlyList<(Type Type, IReadOnlyList<string> Verbs)> Resources { get; }
-
         Task RunAsync(CancellationToken cancellationToken);
     }
 
@@ -69,11 +66,6 @@ namespace Steeltoe.Informers.Operator
         public string Name => _builder.ControllerName;
 
         public Task Synced => _synced.Task;
-
-        public IReadOnlyList<(Type Type, IReadOnlyList<string> Verbs)> Resources =>
-            new[] { (typeof(T), (IReadOnlyList<string>)new[] { "get", "list", "watch", "update", "patch" }) }
-                .Concat(_builder.Relationships.Select(x => (x.OtherType, x.Verbs)))
-                .ToList();
 
         private string Namespace => _builder.AllNamespacesScope ? null : _builder.NamespaceScope ?? _services.DefaultNamespace;
 
