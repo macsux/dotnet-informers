@@ -297,6 +297,8 @@ InformerJson.AddResolver(AppJsonContext.Default);
 
 `samples/AotSmoke` is published as NativeAOT in CI and run against a kind cluster: informers, the generic client, an operator-hosted controller and the webhooks. KubernetesClient 21 itself isn't trim-annotated: it reports trim warnings, and loading a kubeconfig file fails under NativeAOT (its YAML parsing uses reflection), so AOT apps use the in-cluster configuration or set `KubernetesClientConfiguration` properties directly.
 
+Expressions are only compiled where they're also inspected (`Where` pushdown, `TriggerOn` field names). Under NativeAOT they run interpreted; measured on an M-series Mac, a `TriggerOn` selector costs about 0.1 µs per object (`x.Metadata.Generation`) and 0.6 µs when it compares an object by JSON (`x.Spec`). `Trigger.On(name, x => ...)` takes a plain delegate.
+
 ### Diagnostics
 
 The library reports through the meter and activity source named `Steeltoe.Informers` (`InformerDiagnostics.Name`):
