@@ -117,6 +117,28 @@ Both keep keys, owner helpers, metadata pushdown, joins and `RunAsync`.
 - **Producer.** It fills an `IInformerSink<TResource>` (`Replace` for a complete list, `Upsert`, `Delete`) until cancelled.
 - **Options.** `SharedInformerOptions` set the key selector, an optional no-op check (`ChangeComparer`), a filter translator (`IFilterTranslator<TResource>`), a transform and indexes.
 
+### JSON, trimming and NativeAOT
+
+Every package is trim- and AOT-compatible (`IsTrimmable`, `IsAotCompatible`, analyzers clean). The library never serializes by reflection on its own: reading, writing, cloning and comparing objects go through `InformerJson`, a chain of `IJsonTypeInfoResolver`s:
+
+1. your source-generated contexts, registered with `InformerJson.AddResolver(...)`,
+2. the library's own context (`PartialObjectMetadata`, `UntypedKubernetesObject`, …) and KubernetesClient's source-generated `k8s.SourceGenerationContext`, which covers every built-in model,
+3. reflection, only while it's enabled (not in trimmed or AOT apps).
+
+So built-in types work everywhere; a custom resource needs a context in a trimmed or AOT app:
+
+```csharp
+[JsonSerializable(typeof(AppSet))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+internal partial class AppJsonContext : JsonSerializerContext;
+
+InformerJson.AddResolver(AppJsonContext.Default);
+```
+
+`KubernetesGenericClient` (`IKubernetesGenericClient`) reads and writes any resource through the same metadata: `GetAsync`, `ListAsync`, `CreateAsync`, `ReplaceAsync` (optionally `/status`), `PatchAsync`, `ApplyAsync` (server-side apply), `DeleteAsync` (with a UID precondition) and discovery (`GetResourceInfoAsync`: scope, status and scale subresources). Errors are `HttpOperationException`s: check them with `IsNotFound()`, `IsConflict()`, `IsAlreadyExists()` and `IsGone()`.
+
+`samples/AotSmoke` is published as NativeAOT in CI and run against a kind cluster. KubernetesClient 21 itself isn't trim-annotated: it reports trim warnings, and loading a kubeconfig file fails under NativeAOT (its YAML parsing uses reflection), so AOT apps use the in-cluster configuration or set `KubernetesClientConfiguration` properties directly.
+
 ### Diagnostics
 
 The library reports through the meter and activity source named `Steeltoe.Informers` (`InformerDiagnostics.Name`):

@@ -14,6 +14,12 @@ namespace Steeltoe.Informers.KubernetesBase
     [JsonSerializable(typeof(PartialObjectMetadata))]
     [JsonSerializable(typeof(UntypedKubernetesObject))]
     [JsonSerializable(typeof(V1ObjectMeta))]
+    // object-typed model fields (managedFields' fieldsV1, raw extensions, schema defaults) hold a JsonElement after deserialization
+    [JsonSerializable(typeof(JsonElement))]
+    [JsonSerializable(typeof(string))]
+    [JsonSerializable(typeof(bool))]
+    [JsonSerializable(typeof(long))]
+    [JsonSerializable(typeof(double))]
     [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
     internal sealed partial class KubernetesJsonContext : JsonSerializerContext
     {

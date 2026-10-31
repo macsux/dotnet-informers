@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <!-- R0: the library must work in a trimmed, NativeAOT-published app; CI publishes this and runs it against a kind cluster -->
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- any trim/AOT warning from this repo fails the build; KubernetesClient and YamlDotNet aren't annotated and only report one summary warning each -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>IL2104;IL3053</WarningsNotAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KubernetesCore\Steeltoe.Informers.KubernetesCore.csproj" />
+  </ItemGroup>
+</Project>
