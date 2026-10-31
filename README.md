@@ -103,7 +103,7 @@ A new change to a key replaces its pending retry. `RunOptions.RateLimit` limits 
   - Apply it to a source before a join (the result triggers if any contributing change does) or after the join on the combined value. Unlike `Where`, it never removes an object.
   - `IgnoreWritesFrom(writes)` quiets only the echoes of your own writes: give the controller a client made with `client.RecordingWritesTo(writes)` (an `OwnWrites` table of the `resourceVersion`s your writes returned). Use it when the trigger includes what you write yourself.
 - **Periodic re-checks.** Use `Resync(period)` to re-emit every key as `Modify | Sync` (keys with a pending change are skipped). Use `RequeueAfter` for per-key re-checks.
-- **Finalizers.** A deletion first arrives as a `Modify` with `deletionTimestamp` set (`obj.IsBeingDeleted()`). The `Delete` follows once the last finalizer is removed.
+- **Finalizers.** A deletion first arrives as a `Modify` with `deletionTimestamp` set (`obj.IsBeingDeleted()`). The `Delete` follows once the last finalizer is removed. `Finalizers.Handle(client, x => x.Set, ReconcileAsync, ("example.com/pods", CleanupAsync))` wraps a handler: it adds the finalizers before reconciling, and once deletion starts runs each cleanup still pending in order instead (`Done` removes that finalizer; anything else retries). `obj.HasFinalizer(name)`, `client.AddFinalizersAsync` and `RemoveFinalizerAsync` (a 404 after removing the last one counts as success) are the pieces.
 - **Reading another informer.** Before a handler consults a cache filled from another informer (`Into(cache)`), wait for `informer.WaitForSyncAsync()` and `cache.Synchronized`. Otherwise an empty cache makes every object look orphaned.
 
 ### Writing objects
