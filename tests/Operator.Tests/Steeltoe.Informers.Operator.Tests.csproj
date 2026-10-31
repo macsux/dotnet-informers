@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <SignAssembly>true</SignAssembly>
+    <!-- the tests drive informers with their own cancellation and timeouts -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AwesomeAssertions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Operator\Steeltoe.Informers.Operator.csproj" />
+    <ProjectReference Include="..\..\samples\Controllers\Steeltoe.Informers.Samples.Controllers.csproj" />
+    <ProjectReference Include="..\KubernetesBase.Tests\Steeltoe.Informers.KubernetesBase.Tests.csproj" />
+  </ItemGroup>
+</Project>

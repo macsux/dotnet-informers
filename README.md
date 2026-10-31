@@ -8,6 +8,7 @@ An informer is a **level-triggered replica** of a collection of objects (e.g. ev
 - `Steeltoe.Informers.InformersBase`: the shared informer, LINQ operators, joins and the `RunAsync` reconcile loop. Nothing in it assumes Kubernetes.
 - `Steeltoe.Informers.KubernetesBase`: the Kubernetes list/watch producer, filter pushdown, metadata-only and untyped informers, controller helpers.
 - `Steeltoe.Informers.KubernetesCore`: dependency injection registration.
+- `Steeltoe.Informers.Operator`: controller classes and their hosting, on top of the above.
 
 ### The contract
 
@@ -137,6 +138,51 @@ events.For(set).Normal("SuccessfulCreate", $"Created pod {pod.Name()}");
 - Repeats of the same event within `AggregationWindow` update one Event's series count; each involved object is rate limited (`BurstPerObject`, refilled every `RefillInterval`).
 - `LoggingEventRecorder` and `NullEventRecorder` replace it for control planes without the `Event` resource.
 
+### Controller classes
+
+`Steeltoe.Informers.Operator` packages the pieces above. A controller declares its relationships once and reconciles one object at a time; it compiles to shared informers, joins, `Expectations` and `RunAsync`.
+
+```csharp
+builder.Services
+    .AddKubernetesClient(KubernetesClientConfiguration.BuildDefaultConfig)
+    .AddKubernetesOperator(o => o
+        .Json(AppJsonContext.Default)                     // source-generated JSON for custom resources
+        .LeaderElection("appset-operator", "operators")
+        .Namespace("demo"))                               // default scope of every controller
+    .AddController<AppSetController>()
+    .AddController<V1Widget>(c => c.Reconcile(async (ctx, ct) => ReconcileResult.Done));
+
+public sealed class AppSetController(ILogger<AppSetController> logger) : Controller<AppSet>
+{
+    public override void Configure(ControllerBuilder<AppSet> c) => c
+        .TriggerOn(Trigger.AllButStatus)
+        .Owns<V1Pod>()
+        .References<V1Secret>(set => [set.Spec.SecretRef])
+        .Finalizer("example.com/pods", CleanupPodsAsync)
+        .MaxConcurrency(4);
+
+    public override async Task<ReconcileResult> ReconcileAsync(ReconcileContext<AppSet> ctx, CancellationToken ct)
+    {
+        var pods = ctx.Owned<V1Pod>();                         // Tracked<V1Pod> handles, from the cache
+        await ctx.CreateOwnedAsync(newPod, ct);                // owner reference + expectations
+        ctx.Object.Edit().Status.ReadyReplicas = ready;        // copy-on-write
+        await ctx.SaveAsync(ct);                               // PATCH /status, only if it changed
+        return ReconcileResult.Done;
+    }
+}
+```
+
+- **Relationships**, each a `GroupJoin` on shared informers scoped to the controller's namespace:
+  - `Owns<TChild>(trigger?)`: children with a controller owner reference to the primary (matched by UID). `ctx.Owned<TChild>()` lists them, including ones being deleted. Creates and deletes through `ctx.CreateOwnedAsync`/`DeleteOwnedAsync` are tracked: the reconcile isn't called until they're observed or time out.
+  - `References<TOther>(primary => names, name?, trigger?)`: objects the primary names (`name` in its namespace, `namespace/name`, or a cluster-scoped name). `ctx.Related<TOther>(name)` holds the ones that exist; one appearing, changing or disappearing re-runs every primary that names it.
+  - `Watches<TOther>(other => primaryKeys, name?, trigger?)`: objects that know which primaries they affect (a label, a field).
+- **Triggers**: every change triggers unless `TriggerOn(...)` narrows it (`Trigger.AllButStatus`, `Trigger.Generation`, a field list); `IgnoreOwnWrites()` skips only the echoes of the controller's own writes.
+- **Finalizers**: `Finalizer(name, cleanup)` adds it before the first reconcile; once deletion starts the cleanups run instead (in declaration order), `Done` removes each.
+- **The context** is a snapshot from the caches: `Key`, `Trigger` (change, retry, resync), `Object` and related objects as `Tracked<T>` handles, `Events` bound to the object, `Logger`, `Client`, `CreateOwnedAsync`, `DeleteOwnedAsync`, `SaveAsync`. Edits not saved when the reconcile returns are discarded and logged.
+- **Options**: `Namespace`/`AllNamespaces`, `Where` (pushed down), `MaxConcurrency`, `Backoff`, `RateLimit`, `Resync`, `ExpectationsTimeout`; `DeletedAsync(key, lastKnown)` runs once an object is gone.
+- **Hosting**: one hosted service runs every controller. Startup waits (bounded by `WaitForSync`) for their informers to sync; a failing controller restarts with backoff without stopping the others; shutdown waits for running reconciles. Controllers are resolved with a scope per reconcile. `OperatorStatus` reports sync state and the resources and verbs each controller needs. A reconcile error records a `ReconcileError` warning event (`AutomaticEvents(false)` turns that off); `DisableEvents()` logs events instead.
+- **Tests**: `ReconcileContext.ForTest(obj).WithOwned(...).WithRelated(...)` runs a reconcile without informers or an API server and records its `Writes`.
+
 ### Metadata-only and untyped informers
 
 - `informers.MetadataOnly<V1Secret>()` requests the API server's `PartialObjectMetadata` representation: labels, annotations, owner references and finalizers, but no data, `spec` or `status`.
@@ -186,7 +232,7 @@ The library reports through the meter and activity source named `Steeltoe.Inform
 `samples/Controllers` holds controllers built on informers:
 
 - deployment readiness (GroupJoin + Resync)
-- an `AppSet` CRD replica controller (expectations, owner UIDs, finalizer, status, requeues, conflicts)
+- an `AppSet` CRD replica controller as a `Controller<AppSet>` (owned pods, finalizer, status, requeues, conflicts)
 - metadata-only Secret usage and orphan cleanup
 - an untyped `Widget` CRD
 - node pod counts with field selectors

@@ -10,6 +10,9 @@
     <WarningsNotAsErrors>IL2104;IL3053</WarningsNotAsErrors>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\KubernetesCore\Steeltoe.Informers.KubernetesCore.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Operator\Steeltoe.Informers.Operator.csproj" />
   </ItemGroup>
 </Project>

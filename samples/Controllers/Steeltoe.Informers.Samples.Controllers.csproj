@@ -3,7 +3,7 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\KubernetesCore\Steeltoe.Informers.KubernetesCore.csproj" />
+    <ProjectReference Include="..\..\src\Operator\Steeltoe.Informers.Operator.csproj" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Crds\*.yaml" LogicalName="%(Filename)%(Extension)" />

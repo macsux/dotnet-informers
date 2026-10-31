@@ -42,5 +42,19 @@ namespace Steeltoe.Informers.KubernetesBase
 
             return patch;
         }
+
+        /// <summary>Applies a merge patch to <paramref name="target" /> in place.</summary>
+        public static void Apply(JsonObject target, JsonObject patch)
+        {
+            foreach (var (name, value) in patch.ToList())
+            {
+                if (value == null)
+                    target.Remove(name);
+                else if (value is JsonObject nested && target[name] is JsonObject existing)
+                    Apply(existing, nested);
+                else
+                    target[name] = value.DeepClone();
+            }
+        }
     }
 }

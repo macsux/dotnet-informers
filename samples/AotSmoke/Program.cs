@@ -6,14 +6,17 @@ using System.Threading;
 using System.Threading.Tasks;
 using k8s;
 using k8s.Models;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Steeltoe.Informers.InformersBase;
 using Steeltoe.Informers.KubernetesBase;
+using Steeltoe.Informers.Operator;
 
 namespace Steeltoe.Informers.Samples.AotSmoke
 {
     /// <summary>
-    ///     Exercises the library in a NativeAOT app against a real cluster: typed, metadata-only and untyped informers, a reconcile loop, and
-    ///     writes through the generic client. Exits non-zero if a check fails.
+    ///     Exercises the library in a NativeAOT app against a real cluster: typed, metadata-only and untyped informers, a reconcile loop, writes
+    ///     through the generic client, and a controller class hosted by the operator. Exits non-zero if a check fails.
     /// </summary>
     /// <remarks>
     ///     Usage: <c>AotSmoke http://127.0.0.1:8001</c> against <c>kubectl proxy</c>, or <c>AotSmoke</c> in a pod (in-cluster config). KubernetesClient
@@ -87,6 +90,8 @@ namespace Steeltoe.Informers.Samples.AotSmoke
 
                 stop.Cancel();
                 await Task.WhenAll(loop, metadataTask, untypedTask);
+
+                await OperatorChecksAsync(kubernetes, client, ns, checks, ct);
             }
             finally
             {
@@ -95,6 +100,44 @@ namespace Steeltoe.Informers.Samples.AotSmoke
 
             Console.WriteLine(checks.Failed == 0 ? $"All {checks.Passed} checks passed" : $"{checks.Failed} of {checks.Passed + checks.Failed} checks failed");
             return checks.Failed == 0 ? 0 : 1;
+        }
+
+        /// <summary>A controller class hosted by the operator: owned child, finalizer, save, events.</summary>
+        private static async Task OperatorChecksAsync(k8s.Kubernetes kubernetes, KubernetesGenericClient client, string ns, Checks checks, CancellationToken ct)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton(kubernetes);
+            services.AddSingleton<IKubernetes>(kubernetes);
+            services.AddSingleton(client);
+            services.AddSingleton<IKubernetesGenericClient>(client);
+            services.AddKubernetesOperator(o => o.Namespace(ns).Events(e => e.ReportingController = "smoke.steeltoe.io/mirror"))
+                .AddController<MirrorController>();
+            await using var provider = services.BuildServiceProvider();
+            var host = provider.GetServices<IHostedService>().Single();
+            await host.StartAsync(ct);
+            try
+            {
+                await client.CreateAsync(new V1ConfigMap { Metadata = new V1ObjectMeta { Name = "cm", NamespaceProperty = ns }, Data = new Dictionary<string, string> { ["k"] = "v" } }, cancellationToken: ct);
+                await checks.EventuallyAsync("controller creates the owned secret", async () =>
+                    (await client.GetAsync<V1Secret>("cm-mirror", ns, ct))?.Metadata.OwnerReferences?.Any(x => x.Kind == "ConfigMap" && x.Controller == true) == true, ct);
+                await checks.EventuallyAsync("controller adds its finalizer and saves its label", async () =>
+                {
+                    var map = await client.GetAsync<V1ConfigMap>("cm", ns, ct);
+                    return map.HasFinalizer(MirrorController.Finalizer) && map.Metadata.Labels?.ContainsKey(MirrorController.MirroredLabel) == true;
+                }, ct);
+                await checks.EventuallyAsync("controller records an event", async () =>
+                    (await client.ListAsync<Eventsv1Event>(ns, cancellationToken: ct)).Any(x => x.Reason == "Mirrored" && x.ReportingController == "smoke.steeltoe.io/mirror"), ct);
+
+                var current = await client.GetAsync<V1ConfigMap>("cm", ns, ct);
+                await client.DeleteAsync(current, cancellationToken: ct);
+                await checks.EventuallyAsync("finalizer deletes the secret, then the config map goes", async () =>
+                    await client.GetAsync<V1ConfigMap>("cm", ns, ct) == null && await client.GetAsync<V1Secret>("cm-mirror", ns, ct) == null, ct);
+            }
+            finally
+            {
+                await host.StopAsync(CancellationToken.None);
+            }
         }
 
         private static async Task Track<T>(IInformable<string, T> source, Func<T, string> value, ConcurrentDictionary<string, string> state, CancellationToken ct)
@@ -126,6 +169,14 @@ namespace Steeltoe.Informers.Samples.AotSmoke
                     Passed++;
                 else
                     Failed++;
+            }
+
+            public async Task EventuallyAsync(string name, Func<Task<bool>> condition, CancellationToken ct)
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(30);
+                while (!await condition() && DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+                    await Task.Delay(200, CancellationToken.None);
+                Check(name, await condition());
             }
 
             public async Task Eventually(string name, Func<bool> condition, CancellationToken ct)

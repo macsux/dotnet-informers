@@ -17,6 +17,10 @@
     <PackageReference Include="xunit.v3" />
   </ItemGroup>
   <ItemGroup>
+    <!-- the operator tests reuse the fake API server -->
+    <InternalsVisibleTo Include="Steeltoe.Informers.Operator.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\KubernetesBase\Steeltoe.Informers.KubernetesBase.csproj" />
     <ProjectReference Include="..\InformersBase.Tests\Steeltoe.Informers.InformersBase.Tests.csproj" />
   </ItemGroup>

@@ -188,6 +188,7 @@ namespace System.Linq
                         {
                             await slots.WaitAsync(leading.Token).ConfigureAwait(false);
                             ResourceEvent<TKey, TResource> next;
+                            bool retry;
                             try
                             {
                                 if (_options.RateLimit != null)
@@ -204,7 +205,8 @@ namespace System.Linq
                                     return;
                                 }
 
-                                next = taken.Value;
+                                next = taken.Value.Event;
+                                retry = taken.Value.Retry;
                             }
                             catch
                             {
@@ -212,7 +214,7 @@ namespace System.Linq
                                 throw;
                             }
 
-                            var task = RunHandlerAsync(next, leading.Token, slots);
+                            var task = RunHandlerAsync(next, retry, leading.Token, slots);
                             lock (_lock)
                                 _running.Add(task);
                             _ = task.ContinueWith(t =>
@@ -252,7 +254,7 @@ namespace System.Linq
             }
 
             /// <summary>Waits for a ready key; null when the source ended or failed and nothing is left to do.</summary>
-            private async Task<ResourceEvent<TKey, TResource>?> TakeNextAsync(CancellationToken cancellationToken)
+            private async Task<(ResourceEvent<TKey, TResource> Event, bool Retry)?> TakeNextAsync(CancellationToken cancellationToken)
             {
                 while (true)
                 {
@@ -266,7 +268,7 @@ namespace System.Linq
                             _queue.Block(next.Key);
                             _inFlight++;
                             ReportDepthUnsafe();
-                            return next;
+                            return (next, _queue.LastWasRetry);
                         }
 
                         if (_sourceCompleted && _inFlight == 0 && _scheduledRetries == 0 && _queue.PendingCount == 0)
@@ -278,17 +280,20 @@ namespace System.Linq
                 }
             }
 
-            private async Task RunHandlerAsync(ResourceEvent<TKey, TResource> e, CancellationToken cancellationToken, SemaphoreSlim slots)
+            private async Task RunHandlerAsync(ResourceEvent<TKey, TResource> e, bool retry, CancellationToken cancellationToken, SemaphoreSlim slots)
             {
                 await Task.Yield();
                 var started = Stopwatch.GetTimestamp();
+                var trigger = retry ? ReconcileTrigger.Retry : e.EventFlags.HasFlag(EventTypeFlags.Sync) ? ReconcileTrigger.Resync : ReconcileTrigger.Change;
                 using var activity = InformerDiagnostics.ActivitySource.StartActivity("reconcile", ActivityKind.Internal);
                 activity?.SetTag("informers.controller", _nameTag.Value);
                 activity?.SetTag("informers.key", e.Key?.ToString());
                 activity?.SetTag("informers.event", e.EventFlags.ToString());
+                activity?.SetTag("informers.trigger", trigger.ToString());
                 string outcome;
                 try
                 {
+                    RunContext.TriggerValue.Value = trigger;
                     var result = await _handler(e, cancellationToken).ConfigureAwait(false);
                     outcome = OnResult(e, result);
                 }

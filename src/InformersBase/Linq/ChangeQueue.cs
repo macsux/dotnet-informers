@@ -27,6 +27,9 @@ namespace System.Linq
             public EventTypeFlags RetryFlags; // non-zero: redeliver these flags (a retry with nothing newer pending)
         }
 
+        /// <summary>Whether the last event <see cref="TryDequeue" /> returned redelivers a key (a <see cref="Retry" />) rather than a change.</summary>
+        public bool LastWasRetry { get; private set; }
+
         /// <summary>Keys ready to be taken.</summary>
         public int ReadyCount => _ready.Count;
 
@@ -201,6 +204,7 @@ namespace System.Linq
                     continue;
                 var computed = pending.Computed ? EventTypeFlags.Computed : 0;
                 var known = _known.TryGetValue(key, out var knownValue);
+                LastWasRetry = pending.RetryFlags != 0;
                 if (pending.RetryFlags != 0)
                 {
                     result = new ResourceEvent<TKey, TValue>(pending.RetryFlags, key, pending.Value);
