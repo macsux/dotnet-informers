@@ -88,17 +88,17 @@ namespace System.Linq
             }
 
             var computed = e.EventFlags.HasFlag(EventTypeFlags.Computed);
-            changes.Add(e.EventFlags.HasFlag(EventTypeFlags.Delete) ? Delete(e.Key, computed) : Upsert(e.Key, e.Value, computed));
+            changes.Add(e.EventFlags.HasFlag(EventTypeFlags.Delete) ? Delete(e.Key, computed) : Upsert(e.Key, e.Value, computed, e.EventFlags.IsQuiet()));
             return changes;
         }
 
-        private SideChange Upsert(TKey key, TValue value, bool computed)
+        private SideChange Upsert(TKey key, TValue value, bool computed, bool quiet = false)
         {
             var oldKeys = LastJoinKeys(key);
             var newKeys = JoinKeysOf(value);
             _lastKeys[key] = newKeys;
             ApplyUpsert(key, value, oldKeys, newKeys);
-            return new SideChange(key, oldKeys, newKeys, computed);
+            return new SideChange(key, oldKeys, newKeys, computed, quiet);
         }
 
         private SideChange Delete(TKey key, bool computed)
@@ -128,18 +128,22 @@ namespace System.Linq
 
         internal readonly struct SideChange
         {
-            public SideChange(TKey key, TJoinKey[] oldKeys, TJoinKey[] newKeys, bool computed)
+            public SideChange(TKey key, TJoinKey[] oldKeys, TJoinKey[] newKeys, bool computed, bool quiet = false)
             {
                 Key = key;
                 OldKeys = oldKeys;
                 NewKeys = newKeys;
                 Computed = computed;
+                Quiet = quiet;
             }
 
             public TKey Key { get; }
             public TJoinKey[] OldKeys { get; }
             public TJoinKey[] NewKeys { get; }
             public bool Computed { get; }
+
+            /// <summary>The input change was quiet: results it affects are emitted quiet unless a non-quiet change affects them too.</summary>
+            public bool Quiet { get; }
         }
 
         public static JoinSide<TKey, TValue, TJoinKey> Open(IInformable<TKey, TValue> source, Func<TValue, IEnumerable<TJoinKey>> keySelector, CancellationToken cancellationToken)

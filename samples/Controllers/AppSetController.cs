@@ -77,8 +77,8 @@ namespace Steeltoe.Informers.Samples.Controllers
                 p => p.OwnerKeys("AppSet"));
             return appSets
                 .GroupJoin(pods, s => s.Metadata.Uid, p => p.OwnerUids("AppSet"), (s, ps) => new AppSetState(s, ps.ToList()))
-                // after the join, so the join always holds the latest AppSet; status-only changes are dropped here
-                .DistinctUntilChanged(x => x.Signature)
+                // status-only changes (including our own status writes) don't start a reconcile, but still update the key's latest state
+                .TriggerOn(x => x.Signature)
                 .RunAsync(ReconcileAsync, new RunOptions { MaxConcurrency = 4, Name = nameof(AppSetController), Logger = _logger }, cancellationToken);
         }
 
@@ -139,9 +139,9 @@ namespace Steeltoe.Informers.Samples.Controllers
             var ready = live.Count(p => p.Status?.Phase == "Running");
             if (set.Status == null || set.Status.Replicas != live.Count || set.Status.ReadyReplicas != ready || set.Status.ObservedGeneration != set.Metadata.Generation)
             {
-                // write against the current resourceVersion: the event's copy can be older than the last status write, because status-only
-                // changes are filtered out before RunAsync (a retry after a conflict reads it again)
-                var update = await ReadAsync(set, ct).ConfigureAwait(false);
+                // the event holds the latest AppSet: status-only changes reach RunAsync quietly, so a run (or a retry after a conflict) has
+                // the current resourceVersion
+                var update = set.DeepClone();
                 update.Status = new AppSetStatus { Replicas = live.Count, ReadyReplicas = ready, ObservedGeneration = set.Metadata.Generation };
                 if (BeforeStatusWrite != null)
                     await BeforeStatusWrite(update).ConfigureAwait(false);

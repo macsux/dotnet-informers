@@ -6,8 +6,8 @@ namespace System.Linq
     /// <summary>
     ///     Pending changes merged per key, for operators that pull their source eagerly (<c>Resync</c>, <c>RunAsync</c>). It holds, per key,
     ///     the latest pending state and what the consumer currently has, and works out the outgoing flags when a key is taken: Add then
-    ///     Modify is an Add, Add then Delete is nothing, Delete then Add is a Modify. Memory is bounded by the number of keys. Not thread-safe:
-    ///     callers hold their own lock.
+    ///     Modify is an Add, Add then Delete is nothing, Delete then Add is a Modify, quiet then non-quiet is non-quiet. Memory is bounded by the
+    ///     number of keys. Not thread-safe: callers hold their own lock.
     /// </summary>
     internal sealed class ChangeQueue<TKey, TValue>
     {
@@ -23,6 +23,7 @@ namespace System.Linq
             public bool Computed;
             public bool FromReset;
             public bool SyncOnly;
+            public bool Quiet;
             public EventTypeFlags RetryFlags; // non-zero: redeliver these flags (a retry with nothing newer pending)
         }
 
@@ -42,7 +43,28 @@ namespace System.Linq
         {
             var exists = !e.EventFlags.HasFlag(EventTypeFlags.Delete);
             var hadPending = _pending.TryGetValue(e.Key, out var pending);
+            if (e.EventFlags.IsQuiet() && exists && !fromReset && (hadPending ? pending.Exists : _known.ContainsKey(e.Key)))
+            {
+                // a quiet change only refreshes the value: whatever is pending (a change, a sync, a retry) stays as it is
+                if (!hadPending)
+                    pending = new Pending { Exists = true, Quiet = true };
+                pending.Value = e.Value;
+                _pending[e.Key] = pending;
+                MakeReady(e.Key);
+                return;
+            }
+
             // a Sync from upstream stays a Sync unless a real change is pending (then that change covers it)
+            if (e.EventFlags.HasFlag(EventTypeFlags.Sync) && hadPending && pending.Quiet)
+            {
+                // a sync asks for a delivery: the pending quiet change goes out as a sync
+                pending.Quiet = false;
+                pending.SyncOnly = true;
+                _pending[e.Key] = pending;
+                MakeReady(e.Key);
+                return;
+            }
+
             var syncOnly = e.EventFlags.HasFlag(EventTypeFlags.Sync) && exists && (!hadPending || pending.SyncOnly);
             if (e.EventFlags.HasFlag(EventTypeFlags.Sync) && hadPending && !pending.SyncOnly)
             {
@@ -56,9 +78,37 @@ namespace System.Linq
             pending.Computed = e.EventFlags.HasFlag(EventTypeFlags.Computed);
             pending.FromReset = fromReset;
             pending.SyncOnly = syncOnly;
+            pending.Quiet = false;
             pending.RetryFlags = 0;
             _pending[e.Key] = pending;
             MakeReady(e.Key);
+        }
+
+        /// <summary>
+        ///     Records a change without making its key ready when it's <see cref="EventTypeFlags.Quiet" />: the latest value replaces what is
+        ///     pending or what the consumer has, so a later retry or change runs with it. Non-quiet changes are enqueued as usual.
+        /// </summary>
+        /// <returns>True when the change was absorbed (nothing to run for it)</returns>
+        public bool Absorb(ResourceEvent<TKey, TValue> e)
+        {
+            if (e.EventFlags.IsQuiet() && !e.EventFlags.HasFlag(EventTypeFlags.Delete))
+            {
+                if (_pending.TryGetValue(e.Key, out var pending) && pending.Exists)
+                {
+                    pending.Value = e.Value;
+                    _pending[e.Key] = pending;
+                    return true;
+                }
+
+                if (!_pending.ContainsKey(e.Key) && _known.ContainsKey(e.Key))
+                {
+                    _known[e.Key] = e.Value;
+                    return true;
+                }
+            }
+
+            Enqueue(new ResourceEvent<TKey, TValue>(e.EventFlags & ~EventTypeFlags.Quiet, e.Key, e.Value));
+            return false;
         }
 
         /// <summary>A complete state from the source: keys the consumer has that aren't in it become computed deletes.</summary>
@@ -83,9 +133,21 @@ namespace System.Linq
                 Enqueue(item, fromReset: true);
         }
 
-        /// <summary>Asks for a key the consumer has to be delivered again (flagged Sync), unless a change for it is already pending.</summary>
+        /// <summary>
+        ///     Asks for a key the consumer has to be delivered again (flagged Sync), unless a change for it is already pending (a pending quiet
+        ///     change becomes the sync).
+        /// </summary>
         public void RequestSync(TKey key)
         {
+            if (_pending.TryGetValue(key, out var pending) && pending.Quiet)
+            {
+                pending.Quiet = false;
+                pending.SyncOnly = true;
+                _pending[key] = pending;
+                MakeReady(key);
+                return;
+            }
+
             if (_pending.ContainsKey(key) || !_known.TryGetValue(key, out var value))
                 return;
             _pending[key] = new Pending { Exists = true, Value = value, SyncOnly = true };
@@ -155,6 +217,8 @@ namespace System.Linq
                         flags = EventTypeFlags.Add;
                     else if (pending.SyncOnly)
                         flags = EventTypeFlags.Modify | EventTypeFlags.Sync;
+                    else if (pending.Quiet)
+                        flags = EventTypeFlags.Modify | EventTypeFlags.Quiet;
                     else
                         flags = EventTypeFlags.Modify;
                     result = new ResourceEvent<TKey, TValue>(flags | computed, key, pending.Value);

@@ -130,10 +130,10 @@ namespace System.Linq
                                     SupersedeRetry(item.Key);
                                 _queue.EnqueueReset(reset);
                             }
-                            else
+                            else if (!_queue.Absorb(e))
                             {
+                                // a quiet change only refreshes the key's latest value (for its next run); anything else supersedes its retry
                                 SupersedeRetry(e.Key);
-                                _queue.Enqueue(e);
                             }
 
                             SignalUnsafe();
