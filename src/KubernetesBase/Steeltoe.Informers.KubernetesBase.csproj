@@ -5,4 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="..\InformersBase\Steeltoe.Informers.InformersBase.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="ILLink.Descriptors.xml" LogicalName="ILLink.Descriptors.xml" />
+  </ItemGroup>
 </Project>

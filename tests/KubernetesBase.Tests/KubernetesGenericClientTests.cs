@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using AwesomeAssertions;
 using k8s;
+using k8s.Models;
 using Xunit;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -14,10 +15,129 @@ namespace Steeltoe.Informers.KubernetesBase.Tests
     {
         private readonly WireMockServer _server = WireMockServer.Start();
         private readonly IKubernetesResourceClient _client;
+        private readonly IKubernetesGenericClient _generic;
 
         public KubernetesGenericClientTests()
         {
-            _client = new KubernetesGenericClient(new k8s.Kubernetes(new KubernetesClientConfiguration { Host = _server.Urls.First() }));
+            var client = new KubernetesGenericClient(new k8s.Kubernetes(new KubernetesClientConfiguration { Host = _server.Urls.First() }));
+            _client = client;
+            _generic = client;
+        }
+
+        private const string CoreDiscovery =
+            "{\"kind\":\"APIResourceList\",\"groupVersion\":\"v1\",\"resources\":[{\"name\":\"pods\",\"namespaced\":true,\"kind\":\"Pod\",\"verbs\":[],\"singularName\":\"\"},{\"name\":\"pods/status\",\"namespaced\":true,\"kind\":\"Pod\",\"verbs\":[],\"singularName\":\"\"}]}";
+
+        private const string WidgetDiscovery =
+            "{\"kind\":\"APIResourceList\",\"groupVersion\":\"example.com/v1\",\"resources\":[{\"name\":\"widgets\",\"namespaced\":true,\"kind\":\"Widget\",\"verbs\":[],\"singularName\":\"widget\"}]}";
+
+        private void Respond(string path, string method, int status, string body) =>
+            _server.Given(Request.Create().WithPath(path).UsingMethod(method))
+                .RespondWith(Response.Create().WithStatusCode(status).WithHeader("Content-Type", "application/json").WithBody(body));
+
+        private static V1Pod Pod(string uid = null) => new V1Pod { Metadata = new V1ObjectMeta { Name = "web", NamespaceProperty = "prod", Uid = uid } };
+
+        [Fact]
+        public async Task Get_Missing_ReturnsNull()
+        {
+            Respond("/api/v1/namespaces/prod/pods/web", "GET", 404, "{\"kind\":\"Status\",\"reason\":\"NotFound\",\"code\":404}");
+            (await _generic.GetAsync<V1Pod>("web", "prod", TestContext.Current.CancellationToken)).Should().BeNull();
+        }
+
+        [Fact]
+        public async Task List_FollowsContinueTokens()
+        {
+            _server.Given(Request.Create().WithPath("/api/v1/namespaces/prod/pods").WithParam("continue", "next").UsingGet())
+                .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("{\"metadata\":{},\"items\":[{\"metadata\":{\"name\":\"b\"}}]}"));
+            _server.Given(Request.Create().WithPath("/api/v1/namespaces/prod/pods").UsingGet()).AtPriority(10)
+                .RespondWith(Response.Create().WithHeader("Content-Type", "application/json").WithBody("{\"metadata\":{\"continue\":\"next\"},\"items\":[{\"metadata\":{\"name\":\"a\"}}]}"));
+            var pods = await _generic.ListAsync<V1Pod>("prod", cancellationToken: TestContext.Current.CancellationToken);
+            pods.Select(x => x.Metadata.Name).Should().Equal("a", "b");
+        }
+
+        [Fact]
+        public async Task Create_SetsTypeMetaAndPostsToTheCollection()
+        {
+            Respond("/api/v1", "GET", 200, CoreDiscovery);
+            Respond("/api/v1/namespaces/prod/pods", "POST", 201, "{\"metadata\":{\"name\":\"web\",\"uid\":\"u1\"}}");
+            var created = await _generic.CreateAsync(Pod(), new KubernetesWriteOptions { FieldManager = "test" }, TestContext.Current.CancellationToken);
+            created.Metadata.Uid.Should().Be("u1");
+            var request = _server.LogEntries.Last().RequestMessage;
+            request.Body.Should().Contain("\"apiVersion\":\"v1\"").And.Contain("\"kind\":\"Pod\"");
+            request.Query["fieldManager"].Single().Should().Be("test");
+        }
+
+        [Fact]
+        public async Task ReplaceStatus_GoesToTheStatusSubresource()
+        {
+            Respond("/api/v1", "GET", 200, CoreDiscovery);
+            Respond("/api/v1/namespaces/prod/pods/web/status", "PUT", 200, "{\"metadata\":{\"name\":\"web\"}}");
+            await _generic.ReplaceAsync(Pod(), status: true, cancellationToken: TestContext.Current.CancellationToken);
+            _server.LogEntries.Last().RequestMessage.Path.Should().Be("/api/v1/namespaces/prod/pods/web/status");
+        }
+
+        [Fact]
+        public async Task Patch_SendsThePatchTypesContentType()
+        {
+            Respond("/api/v1", "GET", 200, CoreDiscovery);
+            Respond("/api/v1/namespaces/prod/pods/web", "PATCH", 200, "{\"metadata\":{\"name\":\"web\",\"labels\":{\"a\":\"b\"}}}");
+            var patched = await _generic.PatchAsync(Pod(), new V1Patch("{\"metadata\":{\"labels\":{\"a\":\"b\"}}}", V1Patch.PatchType.MergePatch), cancellationToken: TestContext.Current.CancellationToken);
+            patched.Metadata.Labels["a"].Should().Be("b");
+            var request = _server.LogEntries.Last().RequestMessage;
+            request.Headers["Content-Type"].Single().Should().StartWith("application/merge-patch+json");
+            request.Body.Should().Be("{\"metadata\":{\"labels\":{\"a\":\"b\"}}}");
+        }
+
+        [Fact]
+        public async Task Apply_SendsTheDesiredStateWithFieldManager()
+        {
+            Respond("/api/v1", "GET", 200, CoreDiscovery);
+            Respond("/api/v1/namespaces/prod/pods/web", "PATCH", 200, "{\"metadata\":{\"name\":\"web\"}}");
+            await _generic.ApplyAsync(Pod(), "my-controller", force: true, TestContext.Current.CancellationToken);
+            var request = _server.LogEntries.Last().RequestMessage;
+            request.Headers["Content-Type"].Single().Should().StartWith("application/apply-patch+yaml");
+            request.Query["fieldManager"].Single().Should().Be("my-controller");
+            request.Query["force"].Single().Should().Be("true");
+        }
+
+        [Fact]
+        public async Task Delete_SendsUidPrecondition_AndIsFalseWhenGone()
+        {
+            Respond("/api/v1", "GET", 200, CoreDiscovery);
+            Respond("/api/v1/namespaces/prod/pods/web", "DELETE", 200, "{\"kind\":\"Status\"}");
+            (await _generic.DeleteAsync(Pod("u1"), cancellationToken: TestContext.Current.CancellationToken)).Should().BeTrue();
+            _server.LogEntries.Last().RequestMessage.Body.Should().Contain("\"preconditions\":{\"uid\":\"u1\"}");
+
+            var shared = new V1DeleteOptions { PropagationPolicy = "Foreground" };
+            await _generic.DeleteAsync(Pod("u2"), shared, TestContext.Current.CancellationToken);
+            shared.Preconditions.Should().BeNull("the caller's options aren't modified");
+            _server.LogEntries.Last().RequestMessage.Body.Should().Contain("\"uid\":\"u2\"").And.Contain("Foreground");
+
+            _server.Reset();
+            Respond("/api/v1/namespaces/prod/pods/web", "DELETE", 404, "{\"kind\":\"Status\",\"reason\":\"NotFound\",\"code\":404}");
+            (await _generic.DeleteAsync(Pod("u1"), cancellationToken: TestContext.Current.CancellationToken)).Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task UntypedObjects_FindTheirResourceThroughDiscovery()
+        {
+            Respond("/apis/example.com/v1", "GET", 200, WidgetDiscovery);
+            Respond("/apis/example.com/v1/namespaces/prod/widgets/w", "PATCH", 200, "{\"apiVersion\":\"example.com/v1\",\"kind\":\"Widget\",\"metadata\":{\"name\":\"w\"}}");
+            var widget = UntypedKubernetesObject.FromJson("{\"apiVersion\":\"example.com/v1\",\"kind\":\"Widget\",\"metadata\":{\"name\":\"w\",\"namespace\":\"prod\"}}");
+            var info = await _generic.GetResourceInfoAsync(widget, TestContext.Current.CancellationToken);
+            info.Resource.Should().Be(new GroupVersionResource("example.com", "v1", "widgets"));
+            info.HasStatus.Should().BeFalse();
+            var patched = await _generic.PatchAsync(widget, new V1Patch("{}", V1Patch.PatchType.MergePatch), cancellationToken: TestContext.Current.CancellationToken);
+            patched.Kind.Should().Be("Widget");
+        }
+
+        [Fact]
+        public async Task Discovery_ReportsStatusSubresource()
+        {
+            Respond("/api/v1", "GET", 200, CoreDiscovery);
+            var info = await _generic.GetResourceInfoAsync(new GroupVersionResource("", "v1", "pods"), TestContext.Current.CancellationToken);
+            info.HasStatus.Should().BeTrue();
+            info.Namespaced.Should().BeTrue();
+            info.Kind.Should().Be("Pod");
         }
 
         [Theory]

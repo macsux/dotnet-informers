@@ -284,7 +284,7 @@ namespace Steeltoe.Informers.KubernetesBase
 
             try
             {
-                value = Expression.Lambda(Expression.Convert(expression, typeof(object))).Compile(preferInterpretation: true).DynamicInvoke();
+                value = Expression.Lambda<Func<object>>(Expression.Convert(expression, typeof(object))).Compile(preferInterpretation: true)();
                 return true;
             }
             catch (Exception)

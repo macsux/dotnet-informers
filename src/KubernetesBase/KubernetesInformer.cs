@@ -54,7 +54,7 @@ namespace Steeltoe.Informers.KubernetesBase
                 foreach (var index in registration.Indexes)
                     options.Indexes[index.Key] = index.Value;
                 if (registration.MutationDetection)
-                    options.MutationFingerprint = x => KubernetesJson.Serialize(x);
+                    options.MutationFingerprint = x => InformerJson.Serialize(x);
             }
 
             _informer = new SharedInformer<string, TResource>(_producer.RunAsync, options, ListOnce);
@@ -66,7 +66,7 @@ namespace Steeltoe.Informers.KubernetesBase
         {
         }
 
-        internal static TResource TypedDeserializer(JsonElement element) => KubernetesJson.Deserialize<TResource>(element.GetRawText());
+        internal static TResource TypedDeserializer(JsonElement element) => InformerJson.Deserialize<TResource>(element);
 
         public GroupVersionResource Resource { get; }
         public PayloadShape Shape { get; }

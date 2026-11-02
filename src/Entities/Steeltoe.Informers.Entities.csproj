@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- no dependencies: entity classes reference only this package at runtime; the CRD generator reads it by attribute name (KubeOps' Transpiler) -->
+    <Description>Attributes describing custom resources for CRD generation (names and constructor shapes compatible with KubeOps' Transpiler).</Description>
+  </PropertyGroup>
+</Project>

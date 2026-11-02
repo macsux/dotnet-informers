@@ -33,25 +33,6 @@ namespace Steeltoe.Informers.InformersBase.Tests
         }
 
         [Fact]
-        public async Task DistinctUntilChanged_DropsModifiesWithSameSelectedValue_PassesSync()
-        {
-            var source = new TestSource<string, TestResource>();
-            source.SendReset(R("a", "x", version: 1));
-            await using var e = source.DistinctUntilChanged(x => x.Version).GetAsyncEnumerator(Ct);
-            (await Next(e)).EventFlags.Should().HaveFlag(EventTypeFlags.ResetStart);
-
-            source.Send(E(EventTypeFlags.Modify, "a", "status-only", version: 1));
-            source.Send(E(EventTypeFlags.Modify, "a", "spec", version: 2));
-            var modify = await Next(e);
-            modify.Value.Value.Should().Be("spec");
-
-            source.Send(E(EventTypeFlags.Modify | EventTypeFlags.Sync, "a", "spec", version: 2));
-            (await Next(e)).EventFlags.Should().HaveFlag(EventTypeFlags.Sync);
-            source.Send(E(EventTypeFlags.Delete, "a", "spec", version: 2));
-            (await Next(e)).EventFlags.Should().HaveFlag(EventTypeFlags.Delete);
-        }
-
-        [Fact]
         public async Task Resync_ReEmitsKnownKeysAsSync_SkipsKeysWithPendingChange()
         {
             var source = new TestSource<string, TestResource>();

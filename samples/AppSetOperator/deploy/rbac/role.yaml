@@ -1,0 +1,24 @@
+# generated from the operator's controller registrations by Steeltoe.Informers.Operator; don't edit
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appset-operator
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["samples.steeltoe.io"]
+  resources: ["appsets"]
+  verbs: ["get", "list", "patch", "update", "watch"]
+- apiGroups: ["samples.steeltoe.io"]
+  resources: ["appsets/status"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["samples.steeltoe.io"]
+  resources: ["appsets/finalizers"]
+  verbs: ["update"]

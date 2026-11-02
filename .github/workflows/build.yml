@@ -19,3 +19,28 @@ jobs:
           global-json-file: global.json
       - run: dotnet build Steeltoe.Informers.sln -c Release
       - run: dotnet test --solution Steeltoe.Informers.sln -c Release --no-build --coverage --coverage-output-format cobertura
+
+  # R0: the library in a NativeAOT app (no trim/AOT warnings from this repo) and the scenario tests, against a kind cluster
+  cluster:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: informers
+          config: .github/kind.yaml
+      - run: dotnet publish samples/AotSmoke -c Release -o artifacts/aot-smoke
+      - name: AOT smoke test
+        run: |
+          kubectl proxy --port 8001 &
+          sleep 2
+          artifacts/aot-smoke/Steeltoe.Informers.Samples.AotSmoke http://127.0.0.1:8001
+      - run: dotnet build Steeltoe.Informers.sln -c Release
+      - name: Integration tests
+        run: |
+          kind get kubeconfig --name informers > "$RUNNER_TEMP/kubeconfig"
+          INFORMERS_INTEGRATION_KUBECONFIG="$RUNNER_TEMP/kubeconfig" INFORMERS_INTEGRATION_KIND_CLUSTER=informers \
+            dotnet test --project tests/Integration.Tests -c Release --no-build

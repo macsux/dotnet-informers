@@ -1,33 +1,31 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using k8s;
-using k8s.Models;
 using k8s.Authentication;
 using k8s.Autorest;
+using k8s.Models;
 using Steeltoe.Informers.InformersBase;
-using static System.Net.HttpStatusCode;
 
 namespace Steeltoe.Informers.KubernetesBase
 {
-    public class KubernetesGenericClient : IKubernetesGenericClient
+    /// <inheritdoc cref="IKubernetesGenericClient" />
+    public class KubernetesGenericClient : IKubernetesGenericClient, IKubernetesResourceClient
     {
-        private static readonly MethodInfo DeserializeMethod = typeof(KubernetesJson)
-            .GetMethods(BindingFlags.Public | BindingFlags.Static)
-            .Single(x => x.Name == nameof(KubernetesJson.Deserialize) && x.GetParameters().First().ParameterType == typeof(string));
-
+        private const string JsonContentType = "application/json";
         private readonly HttpClient _client;
         private readonly Uri _baseUri;
         private readonly ServiceClientCredentials _credentials;
+        private readonly ConcurrentDictionary<string, Task<V1APIResourceList>> _discovery = new ConcurrentDictionary<string, Task<V1APIResourceList>>();
 
         /// <summary>
         ///     Creates a generic client that reuses the HTTP pipeline, base address and credentials of an existing <see cref="k8s.Kubernetes" /> client
@@ -38,507 +36,307 @@ namespace Steeltoe.Informers.KubernetesBase
 
         public KubernetesGenericClient(HttpClient client, Uri baseUri, ServiceClientCredentials credentials = null)
         {
-            _client = client;
+            _client = client ?? throw new ArgumentNullException(nameof(client));
             _baseUri = baseUri;
             _credentials = credentials;
         }
 
-        public async Task<HttpOperationResponse<KubernetesList<T>>> ListWithHttpMessagesAsync<T>(
-            string namespaceParameter = default,
-            bool? allowWatchBookmarks = default,
-            string continueParameter = default,
-            string fieldSelector = default,
-            string labelSelector = default,
-            int? limit = default,
-            string resourceVersion = default,
-            TimeSpan? timeout = default,
-            bool? watch = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject
-        {
-            var result = await ListWithHttpMessagesAsync(
-                typeof(T),
-                namespaceParameter,
-                allowWatchBookmarks,
-                continueParameter,
-                fieldSelector,
-                labelSelector,
-                limit,
-                resourceVersion,
-                timeout,
-                watch,
-                isPretty,
-                customHeaders,
-                cancellationToken).ConfigureAwait(false);
-            return (HttpOperationResponse<KubernetesList<T>>)result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse> ListWithHttpMessagesAsync(
-            Type type,
-            string namespaceParameter = default,
-            bool? allowWatchBookmarks = default,
-            string continueParameter = default,
-            string fieldSelector = default,
-            string labelSelector = default,
-            int? limit = default,
-            string resourceVersion = default,
-            TimeSpan? timeout = default,
-            bool? watch = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default) =>
-            await SendStandardRequest(
-                type,
-                HttpMethod.Get,
-                responseType: typeof(KubernetesList<>).MakeGenericType(type),
-                namespaceParameter: namespaceParameter,
-                allowWatchBookmarks: allowWatchBookmarks,
-                continueParameter: continueParameter,
-                fieldSelector: fieldSelector,
-                labelSelector: labelSelector,
-                limit: limit,
-                resourceVersion: resourceVersion,
-                timeout: timeout,
-                watch: watch,
-                isPretty: isPretty,
-                customHeaders: customHeaders,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<T>> ReadWithHttpMessagesAsync<T>(
-            string name,
-            string namespaceParameter = default,
-            bool? isExact = default,
-            bool? isExport = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = default,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject
-        {
-            var result = await ReadWithHttpMessagesAsync(typeof(T), name, namespaceParameter, isExact, isExport, isPretty, customHeaders, cancellationToken)
-                .ConfigureAwait(false);
-            return (HttpOperationResponse<T>)result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse> ReadWithHttpMessagesAsync(
-            Type type,
-            string name,
-            string namespaceParameter = default,
-            bool? isExact = default,
-            bool? isExport = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (type == null)
-            {
-                throw new ArgumentNullException(nameof(type));
-            }
-
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            return await SendStandardRequest(
-                type,
-                HttpMethod.Get,
-                name: name,
-                namespaceParameter: namespaceParameter,
-                exact: isExact,
-                export: isExport,
-                isPretty: isPretty,
-                customHeaders: customHeaders,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<T>> CreateWithHttpMessagesAsync<T>(
-            T body,
-            string namespaceParameter = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = default,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject
-        {
-            var result = await CreateWithHttpMessagesAsync((object)body, namespaceParameter, dryRun, fieldManager, isPretty, customHeaders, cancellationToken).ConfigureAwait(false);
-            return (HttpOperationResponse<T>)result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse> CreateWithHttpMessagesAsync(
-            object body,
-            string namespaceParameter = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (body == null)
-            {
-                throw new ArgumentNullException(nameof(body));
-            }
-
-            return await SendStandardRequest(
-                body.GetType(),
-                body: body,
-                httpMethod: HttpMethod.Post,
-                namespaceParameter: namespaceParameter,
-                dryRun: dryRun,
-                fieldManager: fieldManager,
-                isPretty: isPretty,
-                customHeaders: customHeaders,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<V1Status>> DeleteWithHttpMessagesAsync<TResource>(
-            TResource resource,
-            V1DeleteOptions body = default,
-            DryRun? dryRun = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where TResource : IKubernetesObject<V1ObjectMeta>
-        {
-            return await DeleteWithHttpMessagesAsync<TResource>(
-                resource.Metadata.Name,
-                resource.Metadata.NamespaceProperty,
-                body,
-                dryRun,
-                gracePeriod,
-                orphanDependents,
-                propagationPolicy,
-                isPretty,
-                customHeaders,
-                cancellationToken);
-        }
-
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<V1Status>> DeleteWithHttpMessagesAsync<TResource>(
-            string name = default,
-            string namespaceParameter = default,
-            V1DeleteOptions body = default,
-            DryRun? dryRun = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where TResource : IKubernetesObject
-        {
-            var result = await DeleteWithHttpMessagesAsync(
-                typeof(TResource),
-                name,
-                namespaceParameter,
-                body,
-                dryRun,
-                gracePeriod,
-                orphanDependents,
-                propagationPolicy,
-                isPretty,
-                customHeaders,
-                cancellationToken).ConfigureAwait(false);
-            return result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<V1Status>> DeleteWithHttpMessagesAsync(
-            Type type,
-            string name = default,
-            string namespaceParameter = default,
-            V1DeleteOptions body = default,
-            DryRun? dryRun = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (type == null)
-            {
-                throw new ArgumentNullException(nameof(type));
-            }
-
-            var result = await SendStandardRequest(
-                type,
-                body: body,
-                httpMethod: HttpMethod.Delete,
-                responseType: typeof(V1Status),
-                namespaceParameter: namespaceParameter,
-                dryRun: dryRun,
-                gracePeriod: gracePeriod,
-                orphanDependents: orphanDependents,
-                propagationPolicy: propagationPolicy,
-                isPretty: isPretty,
-                customHeaders: customHeaders,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            return (HttpOperationResponse<V1Status>)result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<T>> PatchWithHttpMessagesAsync<T>(
-            V1Patch body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? force = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject
-        {
-            var result = await PatchWithHttpMessagesAsync(typeof(T), body, name, namespaceParameter, statusOnly, dryRun, fieldManager, force, isPretty, customHeaders, cancellationToken)
-                .ConfigureAwait(false);
-            return (HttpOperationResponse<T>)result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse> PatchWithHttpMessagesAsync(
-            Type type,
-            V1Patch body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? force = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (type == null)
-            {
-                throw new ArgumentNullException(nameof(type));
-            }
-
-            if (body == null)
-            {
-                throw new ArgumentNullException(nameof(body));
-            }
-
-            if (name == null)
-            {
-                throw new ArgumentNullException(nameof(name));
-            }
-
-            return await SendStandardRequest(
-                type,
-                body: body,
-                httpMethod: new HttpMethod("PATCH"),
-                name: name,
-                statusOnly: statusOnly,
-                namespaceParameter: namespaceParameter,
-                dryRun: dryRun,
-                fieldManager: fieldManager,
-                force: force,
-                isPretty: isPretty,
-                customHeaders: customHeaders,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<T>> ReplaceWithHttpMessagesAsync<T>(
-            T body,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
+        /// <inheritdoc />
+        public async Task<T> GetAsync<T>(string name, string @namespace = null, CancellationToken cancellationToken = default)
             where T : IKubernetesObject<V1ObjectMeta>
         {
-            return await ReplaceWithHttpMessagesAsync(body, body?.Metadata?.Name, body.Metadata.NamespaceProperty, statusOnly, dryRun, fieldManager, isPretty, customHeaders, cancellationToken).ConfigureAwait(false);
-        }
-
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse<T>> ReplaceWithHttpMessagesAsync<T>(
-            T body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-        {
-            var result = await ReplaceWithHttpMessagesAsync((object)body, name, namespaceParameter, statusOnly, dryRun, fieldManager, isPretty, customHeaders, cancellationToken).ConfigureAwait(false);
-            return (HttpOperationResponse<T>)result;
-        }
-
-        /// <inheritdoc cref="IKubernetes" />
-        public async Task<HttpOperationResponse> ReplaceWithHttpMessagesAsync(
-            object body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (body == null)
-            {
-                throw new ArgumentNullException(nameof(body));
-            }
-
-            if (name == null)
-            {
+            if (string.IsNullOrEmpty(name))
                 throw new ArgumentNullException(nameof(name));
+            try
+            {
+                using var response = await SendAsync(HttpMethod.Get, BuildUrl(GroupVersionResource.For<T>(), @namespace, name), null, null, cancellationToken).ConfigureAwait(false);
+                return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
             }
-
-            return await SendStandardRequest(
-                body.GetType(),
-                body: body,
-                httpMethod: HttpMethod.Put,
-                name: name,
-                statusOnly: statusOnly,
-                namespaceParameter: namespaceParameter,
-                dryRun: dryRun,
-                fieldManager: fieldManager,
-                isPretty: isPretty,
-                customHeaders: customHeaders,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            catch (HttpOperationException ex) when (ex.IsNotFound())
+            {
+                return default;
+            }
         }
 
-        private string BuildUrl(GroupVersionResource resource, string namespaceParameter, string name = null, bool statusOnly = false)
+        /// <inheritdoc />
+        public async Task<IReadOnlyList<T>> ListAsync<T>(string @namespace = null, string labelSelector = null, string fieldSelector = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>
         {
-            var segments = new List<string> { (_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/') };
-            if (string.IsNullOrEmpty(resource.Group))
+            var info = InformerJson.GetTypeInfo<T>();
+            var items = new List<T>();
+            string continueToken = null;
+            do
             {
-                segments.Add("api");
-            }
-            else
-            {
-                segments.Add("apis");
-                segments.Add(resource.Group);
-            }
+                using var response = await ((IKubernetesResourceClient)this).SendListAsync(GroupVersionResource.For<T>(), @namespace, new KubernetesListRequest
+                {
+                    LabelSelector = labelSelector,
+                    FieldSelector = fieldSelector,
+                    Limit = 500,
+                    Continue = continueToken,
+                }, cancellationToken).ConfigureAwait(false);
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (document.RootElement.TryGetProperty("items", out var list) && list.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in list.EnumerateArray())
+                        items.Add(item.Deserialize(info));
+                }
 
-            segments.Add(resource.Version);
-            if (!string.IsNullOrEmpty(namespaceParameter))
-            {
-                segments.Add("namespaces");
-                segments.Add(Uri.EscapeDataString(namespaceParameter));
+                continueToken = document.RootElement.TryGetProperty("metadata", out var metadata) && metadata.TryGetProperty("continue", out var token) ? token.GetString() : null;
             }
+            while (!string.IsNullOrEmpty(continueToken));
 
-            segments.Add(resource.Resource);
-            if (!string.IsNullOrEmpty(name))
-            {
-                segments.Add(Uri.EscapeDataString(name));
-            }
-
-            if (statusOnly)
-            {
-                segments.Add("status");
-            }
-
-            return string.Join("/", segments);
+            return items;
         }
+
+        /// <inheritdoc />
+        public async Task<T> CreateAsync<T>(T obj, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>
+        {
+            if (obj == null)
+                throw new ArgumentNullException(nameof(obj));
+            var resource = await GetResourceInfoAsync(obj, cancellationToken).ConfigureAwait(false);
+            var url = BuildUrl(resource.Resource, resource.Namespaced ? obj.Metadata?.NamespaceProperty : null) + Query(options);
+            using var response = await SendAsync(HttpMethod.Post, url, SerializeWithTypeMeta(obj), JsonContentType, cancellationToken).ConfigureAwait(false);
+            return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task<T> ReplaceAsync<T>(T obj, bool status = false, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>
+        {
+            if (obj == null)
+                throw new ArgumentNullException(nameof(obj));
+            var url = await ObjectUrlAsync(obj, status, cancellationToken).ConfigureAwait(false) + Query(options);
+            using var response = await SendAsync(HttpMethod.Put, url, SerializeWithTypeMeta(obj), JsonContentType, cancellationToken).ConfigureAwait(false);
+            return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task<T> PatchAsync<T>(T obj, V1Patch patch, bool status = false, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>
+        {
+            if (obj == null)
+                throw new ArgumentNullException(nameof(obj));
+            if (patch == null)
+                throw new ArgumentNullException(nameof(patch));
+            var url = await ObjectUrlAsync(obj, status, cancellationToken).ConfigureAwait(false) + Query(options);
+            var content = patch.Content as string ?? InformerJson.Serialize(patch.Content);
+            using var response = await SendAsync(HttpMethod.Patch, url, content, PatchContentType(patch.Type), cancellationToken).ConfigureAwait(false);
+            return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task<T> ApplyAsync<T>(T desired, string fieldManager, bool force = false, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>
+        {
+            if (desired == null)
+                throw new ArgumentNullException(nameof(desired));
+            if (string.IsNullOrEmpty(fieldManager))
+                throw new ArgumentNullException(nameof(fieldManager));
+            var url = await ObjectUrlAsync(desired, false, cancellationToken).ConfigureAwait(false) + Query(new KubernetesWriteOptions { FieldManager = fieldManager }, force);
+            // JSON is YAML: the apply content type accepts it
+            using var response = await SendAsync(HttpMethod.Patch, url, SerializeWithTypeMeta(desired), PatchContentType(V1Patch.PatchType.ApplyPatch), cancellationToken).ConfigureAwait(false);
+            return await ReadAsync<T>(response, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc />
+        public async Task<bool> DeleteAsync<T>(T obj, V1DeleteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>
+        {
+            if (obj == null)
+                throw new ArgumentNullException(nameof(obj));
+            // a copy: the caller's options may be shared between deletes
+            options = options == null ? new V1DeleteOptions() : new V1DeleteOptions
+            {
+                ApiVersion = options.ApiVersion,
+                Kind = options.Kind,
+                DryRun = options.DryRun,
+                GracePeriodSeconds = options.GracePeriodSeconds,
+                IgnoreStoreReadErrorWithClusterBreakingPotential = options.IgnoreStoreReadErrorWithClusterBreakingPotential,
+                OrphanDependents = options.OrphanDependents,
+                Preconditions = options.Preconditions,
+                PropagationPolicy = options.PropagationPolicy,
+            };
+            if (options.Preconditions == null && obj.Metadata?.Uid != null)
+                options.Preconditions = new V1Preconditions { Uid = obj.Metadata.Uid };
+            var url = await ObjectUrlAsync(obj, false, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                using var response = await SendAsync(HttpMethod.Delete, url, InformerJson.Serialize(options), JsonContentType, cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+            catch (HttpOperationException ex) when (ex.IsNotFound())
+            {
+                return false;
+            }
+        }
+
+        /// <inheritdoc />
+        public async Task<KubernetesResourceInfo> GetResourceInfoAsync(IKubernetesObject<V1ObjectMeta> obj, CancellationToken cancellationToken = default)
+        {
+            if (obj == null)
+                throw new ArgumentNullException(nameof(obj));
+            var type = obj.GetType();
+            if (type.GetCustomAttribute<KubernetesEntityAttribute>() != null && type != typeof(PartialObjectMetadata))
+                return await GetResourceInfoAsync(GroupVersionResource.For(type), cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(obj.ApiVersion) || string.IsNullOrEmpty(obj.Kind))
+                throw new InvalidOperationException($"{type.Name} {obj.Metadata?.Name} has no apiVersion and kind to find its resource");
+            var list = await DiscoverAsync(obj.ApiVersion, cancellationToken).ConfigureAwait(false);
+            var match = list.Resources?.FirstOrDefault(x => x.Kind == obj.Kind && !x.Name.Contains('/'))
+                ?? throw new InvalidOperationException($"The API server doesn't serve kind {obj.Kind} in {obj.ApiVersion}");
+            var slash = obj.ApiVersion.IndexOf('/');
+            var resource = slash < 0 ? new GroupVersionResource(string.Empty, obj.ApiVersion, match.Name) : new GroupVersionResource(obj.ApiVersion[..slash], obj.ApiVersion[(slash + 1)..], match.Name);
+            return Describe(resource, list);
+        }
+
+        /// <inheritdoc />
+        public async Task<KubernetesResourceInfo> GetResourceInfoAsync(GroupVersionResource resource, CancellationToken cancellationToken = default)
+        {
+            if (resource == null)
+                throw new ArgumentNullException(nameof(resource));
+            return Describe(resource, await DiscoverAsync(resource.ApiVersion, cancellationToken).ConfigureAwait(false));
+        }
+
+        /// <inheritdoc />
+        async Task<bool> IKubernetesResourceClient.IsNamespacedAsync(GroupVersionResource resource, CancellationToken cancellationToken) =>
+            (await GetResourceInfoAsync(resource, cancellationToken).ConfigureAwait(false)).Namespaced;
 
         /// <inheritdoc />
         async Task<HttpResponseMessage> IKubernetesResourceClient.SendListAsync(GroupVersionResource resource, string namespaceParameter, KubernetesListRequest request, CancellationToken cancellationToken)
         {
             if (resource == null)
-            {
                 throw new ArgumentNullException(nameof(resource));
-            }
-
             request ??= new KubernetesListRequest();
             var sb = new StringBuilder();
-            AddQueryParameter(sb, "allowWatchBookmarks", request.AllowWatchBookmarks);
+            AddQueryParameter(sb, "allowWatchBookmarks", request.AllowWatchBookmarks?.ToString().ToLowerInvariant());
             AddQueryParameter(sb, "continue", request.Continue);
             AddQueryParameter(sb, "fieldSelector", request.FieldSelector);
             AddQueryParameter(sb, "labelSelector", request.LabelSelector);
-            AddQueryParameter(sb, "limit", request.Limit);
+            AddQueryParameter(sb, "limit", request.Limit?.ToString());
             AddQueryParameter(sb, "resourceVersion", request.ResourceVersion);
-            AddQueryParameter(sb, "timeoutSeconds", request.TimeoutSeconds);
-            AddQueryParameter(sb, "watch", request.Watch ? true : (bool?)null);
-            var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(BuildUrl(resource, namespaceParameter) + sb));
-            if (!string.IsNullOrEmpty(request.Accept))
-            {
-                httpRequest.Headers.TryAddWithoutValidation("Accept", request.Accept);
-            }
-
-            if (_credentials != null)
-            {
-                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            }
-
-            var httpResponse = await _client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-            if (!httpResponse.IsSuccessStatusCode)
-            {
-                var content = httpResponse.Content != null ? await httpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false) : string.Empty;
-                var ex = new HttpOperationException($"Operation returned an invalid status code '{httpResponse.StatusCode}'")
-                {
-                    Request = new HttpRequestMessageWrapper(httpRequest, null),
-                    Response = new HttpResponseMessageWrapper(httpResponse, content),
-                };
-                httpRequest.Dispose();
-                httpResponse.Dispose();
-                throw ex;
-            }
-
-            return httpResponse;
+            AddQueryParameter(sb, "timeoutSeconds", request.TimeoutSeconds?.ToString());
+            AddQueryParameter(sb, "watch", request.Watch ? "true" : null);
+            var headers = string.IsNullOrEmpty(request.Accept) ? null : request.Accept;
+            return await SendAsync(HttpMethod.Get, BuildUrl(resource, namespaceParameter) + sb, null, null, cancellationToken, headers).ConfigureAwait(false);
         }
 
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<GroupVersionResource, bool> _namespaced = new System.Collections.Concurrent.ConcurrentDictionary<GroupVersionResource, bool>();
-
-        /// <inheritdoc />
-        async Task<bool> IKubernetesResourceClient.IsNamespacedAsync(GroupVersionResource resource, CancellationToken cancellationToken)
+        private static KubernetesResourceInfo Describe(GroupVersionResource resource, V1APIResourceList list)
         {
-            if (_namespaced.TryGetValue(resource, out var namespaced))
-            {
-                return namespaced;
-            }
-
-            var url = $"{(_baseUri ?? _client.BaseAddress).AbsoluteUri.Trim('/')}/{(string.IsNullOrEmpty(resource.Group) ? "api" : "apis/" + resource.Group)}/{resource.Version}";
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
-            if (_credentials != null)
-            {
-                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            }
-
-            using var httpResponse = await _client.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            var content = await httpResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (!httpResponse.IsSuccessStatusCode)
-            {
-                throw new HttpOperationException($"Discovery of {resource} returned '{httpResponse.StatusCode}'")
-                {
-                    Request = new HttpRequestMessageWrapper(httpRequest, null),
-                    Response = new HttpResponseMessageWrapper(httpResponse, content),
-                };
-            }
-
-            var resources = KubernetesJson.Deserialize<V1APIResourceList>(content);
-            var match = resources.Resources?.FirstOrDefault(x => x.Name == resource.Resource)
+            var match = list.Resources?.FirstOrDefault(x => x.Name == resource.Resource)
                 ?? throw new InvalidOperationException($"The API server doesn't serve {resource}");
-            _namespaced[resource] = match.Namespaced;
-            return match.Namespaced;
+            var subresources = list.Resources.Where(x => x.Name.StartsWith(resource.Resource + "/", StringComparison.Ordinal)).Select(x => x.Name[(resource.Resource.Length + 1)..]).ToList();
+            return new KubernetesResourceInfo(resource, match.Kind, match.Namespaced, subresources.Contains("status"), subresources.Contains("scale"));
         }
 
-        private static object DeserializeObject(Type type, string json) =>
-            DeserializeMethod.MakeGenericMethod(type).Invoke(null, new object[] { json, null });
+        private Task<V1APIResourceList> DiscoverAsync(string apiVersion, CancellationToken cancellationToken) =>
+            _discovery.GetOrAdd(apiVersion, FetchDiscoveryAsync).WaitAsync(cancellationToken);
 
-        private static string GetPatchContentType(V1Patch patch) => patch.Type switch
+        private async Task<V1APIResourceList> FetchDiscoveryAsync(string apiVersion)
+        {
+            var url = $"{Root}/{(apiVersion.Contains('/') ? "apis" : "api")}/{apiVersion}";
+            try
+            {
+                using var response = await SendAsync(HttpMethod.Get, url, null, null, CancellationToken.None).ConfigureAwait(false);
+                return await ReadAsync<V1APIResourceList>(response, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+                _discovery.TryRemove(apiVersion, out _); // don't cache failures
+                throw;
+            }
+        }
+
+        private async Task<string> ObjectUrlAsync(IKubernetesObject<V1ObjectMeta> obj, bool status, CancellationToken cancellationToken)
+        {
+            var name = obj.Metadata?.Name;
+            if (string.IsNullOrEmpty(name))
+                throw new ArgumentException("The object has no name", nameof(obj));
+            var resource = await GetResourceInfoAsync(obj, cancellationToken).ConfigureAwait(false);
+            return BuildUrl(resource.Resource, resource.Namespaced ? obj.Metadata.NamespaceProperty : null, name, status);
+        }
+
+        /// <summary>The object's JSON with <c>apiVersion</c> and <c>kind</c> filled in from its type when unset (without changing the object).</summary>
+        private static string SerializeWithTypeMeta(IKubernetesObject<V1ObjectMeta> obj)
+        {
+            if (!string.IsNullOrEmpty(obj.ApiVersion) && !string.IsNullOrEmpty(obj.Kind))
+                return InformerJson.Serialize(obj);
+            var json = Patching.ToJson(obj);
+            var (apiVersion, kind) = obj.TypeMeta();
+            json["apiVersion"] ??= apiVersion;
+            json["kind"] ??= kind;
+            return json.ToJsonString();
+        }
+
+        private static async Task<T> ReadAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken)
+        {
+            var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            if (content.Length == 0)
+                return default;
+            try
+            {
+                return InformerJson.Deserialize<T>(content);
+            }
+            catch (JsonException ex)
+            {
+                throw new HttpOperationException("Unable to deserialize the response.", ex);
+            }
+        }
+
+        private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string url, string body, string contentType, CancellationToken cancellationToken, string accept = null)
+        {
+            using var request = new HttpRequestMessage(method, new Uri(url));
+            if (body != null)
+            {
+                request.Content = new StringContent(body, Encoding.UTF8);
+                request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse($"{contentType}; charset=utf-8");
+            }
+
+            if (accept != null)
+                request.Headers.TryAddWithoutValidation("Accept", accept);
+            if (_credentials != null)
+                await _credentials.ProcessHttpRequestAsync(request, cancellationToken).ConfigureAwait(false);
+
+            // headers-only so watch responses can be streamed instead of buffered
+            var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return response;
+            var content = response.Content != null ? await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false) : string.Empty;
+            var ex = new HttpOperationException($"Operation returned an invalid status code '{response.StatusCode}'")
+            {
+                Request = new HttpRequestMessageWrapper(request, body),
+                Response = new HttpResponseMessageWrapper(response, content),
+            };
+            response.Dispose();
+            throw ex;
+        }
+
+        private string Root => (_baseUri ?? _client.BaseAddress).AbsoluteUri.TrimEnd('/');
+
+        private string BuildUrl(GroupVersionResource resource, string namespaceParameter, string name = null, bool statusOnly = false)
+        {
+            var sb = new StringBuilder(Root);
+            sb.Append(string.IsNullOrEmpty(resource.Group) ? "/api/" : $"/apis/{resource.Group}/").Append(resource.Version);
+            if (!string.IsNullOrEmpty(namespaceParameter))
+                sb.Append("/namespaces/").Append(Uri.EscapeDataString(namespaceParameter));
+            sb.Append('/').Append(resource.Resource);
+            if (!string.IsNullOrEmpty(name))
+                sb.Append('/').Append(Uri.EscapeDataString(name));
+            if (statusOnly)
+                sb.Append("/status");
+            return sb.ToString();
+        }
+
+        private static string Query(KubernetesWriteOptions options, bool force = false)
+        {
+            var sb = new StringBuilder();
+            AddQueryParameter(sb, "fieldManager", options?.FieldManager);
+            AddQueryParameter(sb, "dryRun", options?.DryRun == true ? "All" : null);
+            AddQueryParameter(sb, "force", force ? "true" : null);
+            return sb.ToString();
+        }
+
+        private static string PatchContentType(V1Patch.PatchType type) => type switch
         {
             V1Patch.PatchType.MergePatch => "application/merge-patch+json",
             V1Patch.PatchType.StrategicMergePatch => "application/strategic-merge-patch+json",
@@ -546,204 +344,11 @@ namespace Steeltoe.Informers.KubernetesBase
             _ => "application/json-patch+json",
         };
 
-        private async Task<HttpOperationResponse> SendStandardRequest(
-            Type resourceType,
-            HttpMethod httpMethod,
-            IList<HttpStatusCode> validResponseCodes = default,
-            Type responseType = default,
-            object body = default,
-            string namespaceParameter = default,
-            string name = default,
-            bool? statusOnly = default,
-            bool? export = default,
-            bool? exact = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? force = default,
-            bool? allowWatchBookmarks = default,
-            string continueParameter = default,
-            string fieldSelector = default,
-            string labelSelector = default,
-            int? limit = default,
-            string resourceVersion = default,
-            TimeSpan? timeout = default,
-            bool? watch = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
+        private static void AddQueryParameter(StringBuilder sb, string key, string value)
         {
-            if (resourceType == null)
-            {
-                throw new ArgumentNullException(nameof(resourceType));
-            }
-
-            if (httpMethod == null)
-            {
-                throw new ArgumentNullException(nameof(httpMethod));
-            }
-
-            if (validResponseCodes == null || validResponseCodes.Count == 0)
-            {
-                validResponseCodes = new List<HttpStatusCode>();
-                validResponseCodes.Add(OK);
-                if (httpMethod.In(HttpMethod.Post, HttpMethod.Put))
-                {
-                    validResponseCodes.Add(Created);
-                }
-
-                if (httpMethod.In(HttpMethod.Post, HttpMethod.Delete))
-                {
-                    validResponseCodes.Add(Accepted);
-                }
-            }
-
-            var url = BuildUrl(GroupVersionResource.For(resourceType), namespaceParameter, name, statusOnly.GetValueOrDefault());
-
-            var sb = new StringBuilder();
-            AddQueryParameter(sb, "export", export);
-            AddQueryParameter(sb, "exact", exact);
-            AddQueryParameter(sb, "gracePeriodSeconds", (long?)gracePeriod?.TotalSeconds);
-            AddQueryParameter(sb, "orphanDependents", orphanDependents);
-            AddQueryParameter(sb, "propagationPolicy", propagationPolicy.ToString());
-            AddQueryParameter(sb, "dryRun", dryRun.HasValue ? dryRun.ToString().ToCamelCase() : null);
-            AddQueryParameter(sb, "fieldManager", fieldManager);
-            AddQueryParameter(sb, "force", force);
-            AddQueryParameter(sb, "allowWatchBookmarks", allowWatchBookmarks);
-            AddQueryParameter(sb, "continue", continueParameter);
-            AddQueryParameter(sb, "fieldSelector", fieldSelector);
-            AddQueryParameter(sb, "labelSelector", labelSelector);
-            AddQueryParameter(sb, "limit", limit);
-            AddQueryParameter(sb, "resourceVersion", resourceVersion);
-            AddQueryParameter(sb, "timeoutSeconds", (long?)timeout?.TotalSeconds);
-            AddQueryParameter(sb, "watch", watch);
-            AddQueryParameter(sb, "pretty", isPretty);
-
-            url = string.Concat(url, sb);
-            // Create HTTP transport objects
-            var httpRequest = new HttpRequestMessage { Method = httpMethod, RequestUri = new Uri(url) };
-
-            // Set Headers
-            if (customHeaders != null)
-            {
-                foreach (var header in customHeaders)
-                {
-                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                }
-            }
-
-            // Serialize Request
-            string requestContent = null;
-            if (body != null)
-            {
-                requestContent = KubernetesJson.Serialize(body);
-                httpRequest.Content = new StringContent(requestContent, Encoding.UTF8);
-                var contentType = body is V1Patch patch ? GetPatchContentType(patch) : "application/json";
-                httpRequest.Content.Headers.ContentType = MediaTypeHeaderValue.Parse($"{contentType}; charset=utf-8");
-            }
-
-            
-
-            // Send Request
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_credentials != null)
-            {
-                await _credentials.ProcessHttpRequestAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            }
-
-            // headers-only so watch responses can be streamed instead of buffered
-            var httpResponse = await _client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-
-            var statusCode = httpResponse.StatusCode;
-            cancellationToken.ThrowIfCancellationRequested();
-            string responseContent;
-
-            if (!validResponseCodes.Contains(statusCode))
-            {
-                var ex = new HttpOperationException($"Operation returned an invalid status code '{statusCode}'");
-                if (httpResponse.Content != null)
-                {
-                    responseContent = await httpResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
-                }
-                else
-                {
-                    responseContent = string.Empty;
-                }
-
-                ex.Request = new HttpRequestMessageWrapper(httpRequest, requestContent);
-                ex.Response = new HttpResponseMessageWrapper(httpResponse, responseContent);
-
-                httpRequest.Dispose();
-                httpResponse?.Dispose();
-                throw ex;
-            }
-
-            if (responseType == null)
-            {
-                responseType = resourceType;
-            }
-
-            var result = (HttpOperationResponse)Activator.CreateInstance(typeof(HttpOperationResponse<>).MakeGenericType(responseType ?? resourceType));
-            result.Request = httpRequest;
-            result.Response = httpResponse;
-            if (watch == true)
-            {
-                // body is a stream of watch events consumed by the caller
-                return result;
-            }
-
-            responseContent = await httpResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
-            if (!string.IsNullOrEmpty(responseContent))
-            {
-                try
-                {
-                    result.GetType().GetProperty("Body").SetValue(result, DeserializeObject(responseType, responseContent));
-                }
-                catch (TargetInvocationException ex) when (ex.InnerException is System.Text.Json.JsonException)
-                {
-                    httpRequest.Dispose();
-                    httpResponse?.Dispose();
-
-                    throw new HttpOperationException("Unable to deserialize the response.", ex.InnerException);
-                }
-            }
-
-            return result;
-        }
-
-        private static void AddQueryParameter(StringBuilder sb, string key, long? value, bool includeIfDefault = false) =>
-            AddQueryParameter(sb, key, value?.ToString(), includeIfDefault);
-
-        private  static void AddQueryParameter(StringBuilder sb, string key, int? value, bool includeIfDefault = false) =>
-            AddQueryParameter(sb, key, value?.ToString(), includeIfDefault);
-
-        private  static void AddQueryParameter(StringBuilder sb, string key, bool? value, bool includeIfDefault = false) =>
-            AddQueryParameter(sb, key, value?.ToString().ToLower(), includeIfDefault);
-
-        private static void AddQueryParameter(StringBuilder sb, string key, string value, bool includeIfDefault = false)
-        {
-            if (!includeIfDefault && string.IsNullOrEmpty(value))
-            {
+            if (string.IsNullOrEmpty(value))
                 return;
-            }
-
-            if (sb == null)
-            {
-                throw new ArgumentNullException(nameof(sb));
-            }
-
-            if (string.IsNullOrEmpty(key))
-            {
-                throw new ArgumentNullException(nameof(key));
-            }
-
-            sb.Append(sb.Length != 0 ? '&' : '?').Append(Uri.EscapeDataString(key)).Append('=');
-            if (!string.IsNullOrEmpty(value))
-            {
-                sb.Append(Uri.EscapeDataString(value));
-            }
+            sb.Append(sb.Length != 0 ? '&' : '?').Append(Uri.EscapeDataString(key)).Append('=').Append(Uri.EscapeDataString(value));
         }
     }
 }

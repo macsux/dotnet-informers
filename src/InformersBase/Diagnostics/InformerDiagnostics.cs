@@ -30,6 +30,9 @@ namespace Steeltoe.Informers.InformersBase.Diagnostics
         internal static readonly Counter<long> Requeues = Meter.CreateCounter<long>("informers.reconcile.requeues", description: "Keys scheduled for retry");
         internal static readonly UpDownCounter<long> QueueDepth = Meter.CreateUpDownCounter<long>("informers.reconcile.queue.depth", description: "Keys waiting for a worker");
 
+        // Kubernetes Events
+        internal static readonly Counter<long> KubernetesEvents = Meter.CreateCounter<long>("informers.kubernetes_events", description: "Kubernetes Events recorded, by result (created, updated, dropped, rate_limited, failed)");
+
         internal static KeyValuePair<string, object> Tag(string name, object value) => new KeyValuePair<string, object>(name, value);
     }
 }

@@ -8,7 +8,11 @@ using AwesomeAssertions;
 using k8s;
 using k8s.Autorest;
 using k8s.Models;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Steeltoe.Informers.KubernetesBase;
+using Steeltoe.Informers.Operator;
 using Steeltoe.Informers.Samples.Controllers;
 using Xunit;
 using static Steeltoe.Informers.Integration.Tests.ClusterFixture;
@@ -24,6 +28,7 @@ namespace Steeltoe.Informers.Integration.Tests
         private readonly ITestOutputHelper _output;
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
         private readonly List<Task> _controllers = new List<Task>();
+        private readonly List<ServiceProvider> _providers = new List<ServiceProvider>();
         private string _ns;
         private k8s.Kubernetes _client;
         private RequestCounter _requests;
@@ -59,6 +64,8 @@ namespace Steeltoe.Informers.Integration.Tests
                 }
             }
 
+            foreach (var provider in _providers)
+                await provider.DisposeAsync();
             if (_ns != null)
                 await _cluster.DeleteNamespaceAsync(_ns);
             _client?.Dispose();
@@ -77,6 +84,38 @@ namespace Steeltoe.Informers.Integration.Tests
                     throw;
                 }
             }));
+
+        /// <summary>Hosts controllers through the operator (DI, hosted service) on this test's client and informers.</summary>
+        private async Task StartOperatorAsync(Action<IServiceCollection> configureServices, Action<OperatorBuilder> addControllers)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging(x => x.AddProvider(new XunitLoggerProvider(_output)));
+            services.AddSingleton(_client);
+            services.AddSingleton<IKubernetes>(_client);
+            services.AddSingleton(new KubernetesGenericClient(_client));
+            services.AddSingleton<IKubernetesGenericClient>(sp => sp.GetRequiredService<KubernetesGenericClient>());
+            services.AddSingleton<IKubernetesInformerFactory>(_informers);
+            configureServices(services);
+            addControllers(services.AddKubernetesOperator(o => o.Json(SampleJsonContext.Default).Namespace(_ns)));
+            var provider = services.BuildServiceProvider();
+            _providers.Add(provider);
+            foreach (var hosted in provider.GetServices<IHostedService>())
+            {
+                await hosted.StartAsync(_stop.Token);
+                _controllers.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(System.Threading.Timeout.Infinite, _stop.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    await hosted.StopAsync(CancellationToken.None);
+                }));
+            }
+        }
 
         private void AssertControllersRunning()
         {
@@ -149,14 +188,16 @@ namespace Steeltoe.Informers.Integration.Tests
         public async Task CrdReplicaController_Expectations_OwnerUid_Finalizers_Status_Requeue_Conflicts()
         {
             SkipIfNoCluster();
-            var controller = new AppSetController(_informers, _client, new KubernetesGenericClient(_client));
+            var stats = new ControllerStats();
+            var hooks = new AppSetTestHooks();
             var other = await CreateAppSet("other", 0);
             // a pod that claims to be owned by an AppSet named "web", but by UID belongs to "other": it must never count for "web"
             var decoy = PausePod(_ns, "decoy", new Dictionary<string, string> { [AppSet.OwnerLabel] = "web" });
             decoy.Metadata.OwnerReferences = new List<V1OwnerReference> { new V1OwnerReference { ApiVersion = "samples.steeltoe.io/v1", Kind = "AppSet", Name = "web", Uid = other.Metadata.Uid } };
             await _cluster.Admin.CoreV1.CreateNamespacedPodAsync(decoy, _ns);
             var web = await CreateAppSet("web", 3);
-            Start(ct => controller.RunAsync(_ns, ct));
+            await StartOperatorAsync(services => services.AddSingleton(stats).AddSingleton(hooks), o => o.AddController<AppSetController>());
+            var controller = (Stats: stats, Hooks: hooks);
 
             async Task<bool> Converged(int replicas)
             {
@@ -186,7 +227,7 @@ namespace Steeltoe.Informers.Integration.Tests
 
             // a concurrent change right before the status write: the write gets 409 and RunAsync retries with the latest state
             var raced = 0;
-            controller.BeforeStatusWrite = async set =>
+            controller.Hooks.BeforeStatusWrite = async set =>
             {
                 if (Interlocked.Exchange(ref raced, 1) == 0)
                     await AppSets.PatchNamespacedAsync<AppSet>(new V1Patch("{\"metadata\":{\"labels\":{\"touched\":\"yes\"}}}", V1Patch.PatchType.MergePatch), _ns, "web");

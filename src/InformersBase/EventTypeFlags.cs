@@ -60,11 +60,21 @@ namespace Steeltoe.Informers.InformersBase
         ///     don't match what is in cache, so there must have been updates that were missed. By comparing current state
         ///     and old state (cache), we can compute the kind of events that we missed and emit them with this flag
         /// </summary>
-        Computed = 512
+        Computed = 512,
+
+        /// <summary>
+        ///     A modification nothing downstream needs to react to (see <c>TriggerOn</c>): it still carries the latest object, so caches, joins and
+        ///     retries stay current, but <c>RunAsync</c> doesn't start a reconcile for it. When changes merge per key, quiet and non-quiet make
+        ///     non-quiet. Only ever set together with <see cref="Modify" />.
+        /// </summary>
+        Quiet = 1024
     }
 
     public static class EventTypeFlagsExtensions
     {
         public static bool IsMeta(this EventTypeFlags flags) => flags.HasFlag(EventTypeFlags.ResetEmpty) || flags.HasFlag(EventTypeFlags.Delete);
+
+        /// <summary>Whether the change is <see cref="EventTypeFlags.Quiet" />: it updates state but shouldn't trigger a reconcile.</summary>
+        public static bool IsQuiet(this EventTypeFlags flags) => (flags & EventTypeFlags.Quiet) != 0;
     }
 }

@@ -8,6 +8,10 @@ An informer is a **level-triggered replica** of a collection of objects (e.g. ev
 - `Steeltoe.Informers.InformersBase`: the shared informer, LINQ operators, joins and the `RunAsync` reconcile loop. Nothing in it assumes Kubernetes.
 - `Steeltoe.Informers.KubernetesBase`: the Kubernetes list/watch producer, filter pushdown, metadata-only and untyped informers, controller helpers.
 - `Steeltoe.Informers.KubernetesCore`: dependency injection registration.
+- `Steeltoe.Informers.Operator`: controller classes and their hosting, on top of the above.
+- `Steeltoe.Informers.Operator.Web`: admission and conversion webhooks on ASP.NET Core minimal APIs.
+- `Steeltoe.Informers.Entities`: dependency-free attributes describing custom resources for CRD generation.
+- `Steeltoe.Informers.Crds`: build-time generation of CRDs (and, for operator apps, their RBAC role).
 
 ### The contract
 
@@ -94,14 +98,168 @@ deployments.Where(d => d.Metadata.NamespaceProperty == "payments")
 
 A new change to a key replaces its pending retry. `RunOptions.RateLimit` limits handler starts overall.
 
-- **Leader election.** Set `RunOptions.LeaderElection = new KubernetesLeaderElection(client, ns, "my-controller", podName)`. Every replica keeps its informers warm; only the leader runs handlers. Losing leadership cancels running handlers.
-- **Duplicate creates.** `Expectations` records the creates and deletes a reconcile issued. Wrap the watched children with `expectations.Observe(pods, p => p.OwnerKeys("AppSet"))`, so observations happen before the join sees them, and skip acting until `IsSatisfied(key)` (see `samples/Controllers/AppSetController.cs`).
-- **Ignoring your own status writes.** Use `DistinctUntilChanged(x => x.Metadata.Generation)`, or a signature of what you act on, to drop `Modify` events that don't change it. It's per consumer.
-  - Place it **after** a join, so the join still sees the latest object.
-  - A dropped event also never reaches `RunAsync`: write against the object's current `resourceVersion` (re-read it before the write) rather than the possibly older copy in the event.
+- **Leader election.** Set `RunOptions.LeaderElection = new KubernetesLeaderElection(client, ns, "my-controller", podName)`: a `coordination.k8s.io/v1` Lease with client-go's protocol (the holder renews it; another replica takes over once it saw no renewal for the lease duration, on its own clock; a leader that can't renew within the renew deadline steps down; disposing releases it). It's built on the generic client, not KubernetesClient's leader election. Every replica keeps its informers warm; only the leader runs handlers. Losing leadership cancels running handlers.
+- **Duplicate creates.** `Expectations` records the creates and deletes a reconcile issued. Wrap the watched children with `expectations.Observe(pods, p => p.OwnerKeys("AppSet"))`, so observations happen before the join sees them, and skip acting until `IsSatisfied(key)`. Controller classes do this for `Owns<TChild>()` relationships.
+- **Ignoring your own status writes.** `TriggerOn` decides which changes start a reconcile without dropping any: a change that doesn't alter what it selects arrives flagged `Quiet`. It still carries the latest object (joins, caches and retries stay current), but `RunAsync` doesn't run for it. When changes merge per key, quiet and non-quiet make non-quiet.
+  - `TriggerOn(x => x.Spec, x => x.Metadata.Labels)`: values compare structurally (primitives by value, collections entry by entry, other objects by their JSON through `InformerJson`), so fresh objects from every watch event with the same content compare equal.
+  - Presets: `Trigger.Generation`, `Trigger.AllButStatus` (generation, labels, annotations, finalizers, owner references), `Trigger.Any`; combinable with a field list (`TriggerOn(Trigger.Generation, x => x.Metadata.Labels)`) or with each other (`Trigger.Combine`). `TriggerWhen((previous, current) => …)` for anything else.
+  - Adds, deletes, resets and syncs always trigger, and over Kubernetes objects so does `deletionTimestamp` being set, so finalizers run whatever the selection.
+  - Apply it to a source before a join (the result triggers if any contributing change does) or after the join on the combined value. Unlike `Where`, it never removes an object.
+  - `IgnoreWritesFrom(writes)` quiets only the echoes of your own writes: give the controller a client made with `client.RecordingWritesTo(writes)` (an `OwnWrites` table of the `resourceVersion`s your writes returned; only writes guarded by the version they were based on are recorded, since an unguarded no-op returns another writer's version). Use it when the trigger includes what you write yourself.
 - **Periodic re-checks.** Use `Resync(period)` to re-emit every key as `Modify | Sync` (keys with a pending change are skipped). Use `RequeueAfter` for per-key re-checks.
-- **Finalizers.** A deletion first arrives as a `Modify` with `deletionTimestamp` set (`obj.IsBeingDeleted()`). The `Delete` follows once the last finalizer is removed.
+- **Finalizers.** A deletion first arrives as a `Modify` with `deletionTimestamp` set (`obj.IsBeingDeleted()`). The `Delete` follows once the last finalizer is removed. `Finalizers.Handle(client, x => x.Set, ReconcileAsync, ("example.com/pods", CleanupAsync))` wraps a handler: it adds the finalizers before reconciling, and once deletion starts runs each cleanup still pending in order instead (`Done` removes that finalizer; anything else retries). `obj.HasFinalizer(name)`, `client.AddFinalizersAsync` and `RemoveFinalizerAsync` (a 404 after removing the last one counts as success) are the pieces.
 - **Reading another informer.** Before a handler consults a cache filled from another informer (`Into(cache)`), wait for `informer.WaitForSyncAsync()` and `cache.Synchronized`. Otherwise an empty cache makes every object look orphaned.
+
+### Writing objects
+
+There is one way to change an object: edit a copy, and the difference is sent as a JSON merge patch.
+
+```csharp
+await client.PatchAsync(set, s => s.Status.ReadyReplicas = ready, ct);          // → PATCH .../appsets/demo/status
+await client.PatchAsync(pod, p => p.Metadata.Labels["tier"] = "web", ct);        // → PATCH .../pods/demo-x7k2p
+```
+
+- The object passed in is never modified (it's cloned first), so objects from an informer can be passed directly. Nothing is sent when the edit changes nothing.
+- The patch carries the original's `resourceVersion`, so it fails with 409 Conflict if the object changed meanwhile, and `RunAsync` retries with the latest object. A merge patch replaces lists (finalizers, conditions) whole, which is only safe with this precondition; `new PatchOptions { RequireCurrentVersion = false }` opts out.
+- With a status subresource (from discovery), `status` changes go to `/status` and the rest to the object: two requests when both changed.
+- `Tracked<T>` is a copy-on-write handle: `Original` (shared, never modified), `Edit()` (clones on first call), `Value`, `IsModified`, `HasChanges()`. `client.SaveAsync(tracked)` sends the difference and makes the stored object the new original.
+- `child.WithOwnerReference(owner)` adds a controller owner reference (rejecting owners without a UID, owners in another namespace and a second controller); `owner.ToOwnerReference()` builds one. `client.CreateOwnedAsync(owner, child, expectations)` and `DeleteOwnedAsync` set the owner reference and record the create or delete in `Expectations`.
+- `status.Conditions.Set("Ready", true, reason: "PodsReady", observedGeneration: gen)` updates `lastTransitionTime` only when the status value changes; also `Get`, `IsTrue`, `Remove`.
+- `client.ApplyAsync(desired, fieldManager)` declares a child's full desired state with server-side apply.
+
+### Kubernetes Events
+
+`KubernetesEventRecorder` (`IEventRecorder`) writes the Events `kubectl describe` shows:
+
+```csharp
+events.Warning(set, "FailedCreate", ex.Message, action: "Create", related: pod);
+events.For(set).Normal("SuccessfulCreate", $"Created pod {pod.Name()}");
+```
+
+- Recording never blocks or fails the caller: events go through a bounded queue to a background writer; API errors are logged, counted (`informers.kubernetes_events`) and dropped.
+- `events.k8s.io/v1` by default, `core/v1` with `Api = EventApi.CoreV1`; `ReportingController` and `ReportingInstance` (default: `POD_NAME`, or the machine name) are set.
+- Repeats of the same event within `AggregationWindow` update one Event's series count; each involved object is rate limited (`BurstPerObject`, refilled every `RefillInterval`).
+- `LoggingEventRecorder` and `NullEventRecorder` replace it for control planes without the `Event` resource.
+
+### Controller classes
+
+`Steeltoe.Informers.Operator` packages the pieces above. A controller declares its relationships once and reconciles one object at a time; it compiles to shared informers, joins, `Expectations` and `RunAsync`.
+
+```csharp
+builder.Services
+    .AddKubernetesClient(KubernetesClientConfiguration.BuildDefaultConfig)
+    .AddKubernetesOperator(o => o
+        .Json(AppJsonContext.Default)                     // source-generated JSON for custom resources
+        .LeaderElection("appset-operator", "operators")
+        .Namespace("demo"))                               // default scope of every controller
+    .AddController<AppSetController>()
+    .AddController<V1Widget>(c => c.Reconcile(async (ctx, ct) => ReconcileResult.Done));
+
+public sealed class AppSetController(ILogger<AppSetController> logger) : Controller<AppSet>
+{
+    public override void Configure(ControllerBuilder<AppSet> c) => c
+        .TriggerOn(Trigger.AllButStatus)
+        .Owns<V1Pod>()
+        .References<V1Secret>(set => [set.Spec.SecretRef])
+        .Finalizer("example.com/pods", CleanupPodsAsync)
+        .MaxConcurrency(4);
+
+    public override async Task<ReconcileResult> ReconcileAsync(ReconcileContext<AppSet> ctx, CancellationToken ct)
+    {
+        var pods = ctx.Owned<V1Pod>();                         // Tracked<V1Pod> handles, from the cache
+        await ctx.CreateOwnedAsync(newPod, ct);                // owner reference + expectations
+        ctx.Object.Edit().Status.ReadyReplicas = ready;        // copy-on-write
+        await ctx.SaveAsync(ct);                               // PATCH /status, only if it changed
+        return ReconcileResult.Done;
+    }
+}
+```
+
+- **Relationships**, each a `GroupJoin` on shared informers scoped to the controller's namespace:
+  - `Owns<TChild>(trigger?)`: children with a controller owner reference to the primary (matched by UID). `ctx.Owned<TChild>()` lists them, including ones being deleted. Creates and deletes through `ctx.CreateOwnedAsync`/`DeleteOwnedAsync` are tracked: the reconcile isn't called until they're observed or time out.
+  - `References<TOther>(primary => names, name?, trigger?)`: objects the primary names (`name` in its namespace, `namespace/name`, or a cluster-scoped name). `ctx.Related<TOther>(name)` holds the ones that exist; one appearing, changing or disappearing re-runs every primary that names it.
+  - `Watches<TOther>(other => primaryKeys, name?, trigger?)`: objects that know which primaries they affect (a label, a field).
+- **Triggers**: every change triggers unless `TriggerOn(...)` narrows it (`Trigger.AllButStatus`, `Trigger.Generation`, a field list); `IgnoreOwnWrites()` skips only the echoes of the controller's own writes.
+- **Finalizers**: `Finalizer(name, cleanup)` adds it before the first reconcile; once deletion starts the cleanups run instead (in declaration order), `Done` removes each.
+- **The context** is a snapshot from the caches: `Key`, `Trigger` (change, retry, resync), `Object` and related objects as `Tracked<T>` handles, `Events` bound to the object, `Logger`, `Client`, `CreateOwnedAsync`, `DeleteOwnedAsync`, `SaveAsync`. Edits not saved when the reconcile returns are discarded and logged.
+- **Options**: `Namespace`/`AllNamespaces`, `Where` (pushed down), `MaxConcurrency`, `Backoff`, `RateLimit`, `Resync`, `ExpectationsTimeout`; `DeletedAsync(key, lastKnown)` runs once an object is gone.
+- **Hosting**: one hosted service runs every controller. Startup waits (bounded by `WaitForSync`) for their informers to sync; a failing controller restarts with backoff without stopping the others; shutdown waits for running reconciles. Controllers are resolved with a scope per reconcile. `OperatorStatus` reports sync state and the resources and verbs each controller needs. A reconcile error records a `ReconcileError` warning event (`AutomaticEvents(false)` turns that off); `DisableEvents()` logs events instead.
+- **Tests**: `ReconcileContext.ForTest(obj).WithOwned(...).WithRelated(...)` runs a reconcile without informers or an API server and records its `Writes`.
+
+### CRDs and RBAC from C# types
+
+CRDs are generated at build time, never at runtime:
+
+```xml
+<PropertyGroup>
+  <InformersGenerateManifests>true</InformersGenerateManifests>   <!-- deploy/crds/*.yaml, and deploy/rbac/role.yaml for an operator app -->
+</PropertyGroup>
+```
+
+```csharp
+[KubernetesEntity(Group = "example.com", ApiVersion = "v1", Kind = "AppSet", PluralName = "appsets")]
+[KubernetesEntityShortNames("as")]
+public class AppSet : IKubernetesObject<V1ObjectMeta>, ISpec<AppSetSpec>, IStatus<AppSetStatus>   // Status → status subresource
+{ ... }
+
+public class AppSetSpec
+{
+    [Required, RangeMinimum(0), Description("Pods to keep running."), AdditionalPrinterColumn(name: "Desired")]
+    public int Replicas { get; set; }
+
+    [Pattern("^[a-z0-9./:-]+$")]
+    public string Image { get; set; }
+
+    [ValidationRule("self.size() <= 10", message: "at most 10 env vars")]
+    public Dictionary<string, string> Env { get; set; }
+}
+```
+
+- The generator runs KubeOps' Transpiler in its own process over the compiled assembly (through a `MetadataLoadContext`: no user code runs), so its dependencies never meet the app's. It covers structural schemas from C# types (`JsonPropertyName`, enums, nullability, lists, dictionaries, `IntOrString`, `ResourceQuantity`, embedded Kubernetes types), validation attributes, CEL rules, printer columns, status and scale subresources, short names, scope and multiple versions with one `[StorageVersion]`.
+- Entity classes reference only `Steeltoe.Informers.Entities`, whose attributes have the names and constructor shapes of KubeOps'; the Transpiler matches them by name. The generator applies the ones with enum arguments itself (`EntityScope`, `XListType`, `XMapType`, printer column priorities), and list map keys are `[ListMapKeys]` (KubeOps' `XListMapKeys` would be rejected next to a list type the Transpiler can't read). `tests/Crds.Tests` runs the Transpiler over every attribute, so a change on KubeOps' side fails the build.
+- For an operator app (`OutputType` Exe), the build then starts the app with `INFORMERS_MANIFESTS_OUTPUT` set: it writes the `ClusterRole` its controllers need (their resources and verbs, status and finalizer subresources, Events, Leases with leader election) and exits before connecting to a cluster. `OperatorStatus.Resources` lists the same at runtime.
+- `.InstallCrds()` on the operator builder creates the CRDs embedded as YAML resources before the controllers start: for development only.
+
+### Admission and conversion webhooks
+
+`Steeltoe.Informers.Operator.Web` serves the webhooks Kubernetes calls, on minimal APIs with source-generated JSON (trim- and AOT-compatible):
+
+```csharp
+public sealed class AppSetValidator : IValidator<AppSet>
+{
+    public ValueTask<AdmissionResult> CreateAsync(AppSet set, AdmissionContext ctx, CancellationToken ct) =>
+        new(set.Spec.Replicas > 50 ? AdmissionResult.Deny("replicas must be ≤ 50") : AdmissionResult.Allow());
+}
+
+public sealed class AppSetDefaulter : IMutator<AppSet>
+{
+    public ValueTask<AppSet> CreateAsync(AppSet set, AdmissionContext ctx, CancellationToken ct)
+    {
+        set.Spec.Image ??= "registry.k8s.io/pause:3.10";
+        return new(set);                                       // the JSON patch is computed for you
+    }
+}
+
+public sealed class AppSetV1Converter : IConverter<AppSetV1, AppSetV2>   // v2 = hub (storage) version
+{
+    public AppSetV2 ToHub(AppSetV1 v1) => ...;
+    public AppSetV1 FromHub(AppSetV2 v2) => ...;
+}
+
+builder.Services.AddKubernetesOperator()
+    .AddValidator<AppSetValidator>()
+    .AddMutator<AppSetDefaulter>()
+    .AddConverter<AppSetV1Converter>()
+    .Webhooks(w => { w.ServiceName = "appset-operator"; w.ServiceNamespace = "operators"; });
+app.MapKubernetesWebhooks();     // /validate/samples.steeltoe.io/v1/appsets, /mutate/..., /convert/samples.steeltoe.io/appsets
+```
+
+- **Validation**: create, update (old and new) and delete (add `DELETE` to `Operations`); allow, deny with a message and status code, warnings; `AdmissionContext` carries the operation, user and `DryRun`.
+- **Mutation**: the handler gets a private copy and returns the object to persist; the package sends the JSON patch of what changed.
+- **Conversion**: hub and spoke, a batch of objects per request, one endpoint per resource for all its converters.
+- Handlers are resolved per request from dependency injection and are plain classes to unit-test.
+- In manifest mode (`InformersGenerateManifests`) the operator app also writes `webhooks/validating.yaml`, `webhooks/mutating.yaml` (with service, path, failure policy, side effects and timeout) and `webhooks/conversion.yaml`, a merge patch per CRD setting `spec.conversion`.
+- TLS is the deployment's job (cert-manager or a mounted secret; `CaBundle` for a fixed CA).
 
 ### Metadata-only and untyped informers
 
@@ -117,6 +275,30 @@ Both keep keys, owner helpers, metadata pushdown, joins and `RunAsync`.
 - **Producer.** It fills an `IInformerSink<TResource>` (`Replace` for a complete list, `Upsert`, `Delete`) until cancelled.
 - **Options.** `SharedInformerOptions` set the key selector, an optional no-op check (`ChangeComparer`), a filter translator (`IFilterTranslator<TResource>`), a transform and indexes.
 
+### JSON, trimming and NativeAOT
+
+Every package is trim- and AOT-compatible (`IsTrimmable`, `IsAotCompatible`, analyzers clean). The library never serializes by reflection on its own: reading, writing, cloning and comparing objects go through `InformerJson`, a chain of `IJsonTypeInfoResolver`s:
+
+1. your source-generated contexts, registered with `InformerJson.AddResolver(...)`,
+2. the library's own context (`PartialObjectMetadata`, `UntypedKubernetesObject`, …) and KubernetesClient's source-generated `k8s.SourceGenerationContext`, which covers every built-in model,
+3. reflection, only while it's enabled (not in trimmed or AOT apps).
+
+So built-in types work everywhere; a custom resource needs a context in a trimmed or AOT app:
+
+```csharp
+[JsonSerializable(typeof(AppSet))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+internal partial class AppJsonContext : JsonSerializerContext;
+
+InformerJson.AddResolver(AppJsonContext.Default);
+```
+
+`KubernetesGenericClient` (`IKubernetesGenericClient`) reads and writes any resource through the same metadata: `GetAsync`, `ListAsync`, `CreateAsync`, `ReplaceAsync` (optionally `/status`), `PatchAsync`, `ApplyAsync` (server-side apply), `DeleteAsync` (with a UID precondition) and discovery (`GetResourceInfoAsync`: scope, status and scale subresources). Errors are `HttpOperationException`s: check them with `IsNotFound()`, `IsConflict()`, `IsAlreadyExists()` and `IsGone()`.
+
+`samples/AotSmoke` is published as NativeAOT in CI and run against a kind cluster: informers, the generic client, an operator-hosted controller and the webhooks. KubernetesClient 21 itself isn't trim-annotated: it and YamlDotNet report their own trim/AOT warnings (none come from this repo's packages). Loading a kubeconfig file works in trimmed apps (KubernetesBase keeps KubernetesClient's kubeconfig model types through a linker descriptor) but fails under NativeAOT inside KubernetesClient's YAML parsing, so AOT apps use the in-cluster configuration or set `KubernetesClientConfiguration` properties directly. Trimming doesn't remove unused built-in models: KubernetesClient's source-generated context keeps all of them.
+
+Expressions are only compiled where they're also inspected (`Where` pushdown, `TriggerOn` field names). Under NativeAOT they run interpreted; measured on an M-series Mac, a `TriggerOn` selector costs about 0.1 µs per object (`x.Metadata.Generation`) and 0.6 µs when it compares an object by JSON (`x.Spec`). `Trigger.On(name, x => ...)` takes a plain delegate.
+
 ### Diagnostics
 
 The library reports through the meter and activity source named `Steeltoe.Informers` (`InformerDiagnostics.Name`):
@@ -130,7 +312,7 @@ The library reports through the meter and activity source named `Steeltoe.Inform
 `samples/Controllers` holds controllers built on informers:
 
 - deployment readiness (GroupJoin + Resync)
-- an `AppSet` CRD replica controller (expectations, owner UIDs, finalizer, status, requeues, conflicts)
+- an `AppSet` CRD replica controller as a `Controller<AppSet>` (owned pods, finalizer, status, requeues, conflicts), with its CRD generated from the C# type; `samples/AppSetOperator` hosts it and generates its RBAC role
 - metadata-only Secret usage and orphan cleanup
 - an untyped `Widget` CRD
 - node pod counts with field selectors

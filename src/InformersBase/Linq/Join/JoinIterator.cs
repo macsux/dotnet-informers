@@ -8,7 +8,8 @@ namespace System.Linq
     /// <summary>
     ///     Common loop of Join and GroupJoin. It pulls both inputs in one loop (one side processed at a time), turns each input change into the
     ///     result keys it affects, and emits per result key by comparing the recomputed result with the one it last sent. It starts with one
-    ///     reset once both inputs finished their first reset. Results are computed when the consumer pulls, so changes merge per result key.
+    ///     reset once both inputs finished their first reset. Results are computed when the consumer pulls, so changes merge per result key. A
+    ///     result changed only by quiet input changes is emitted quiet.
     /// </summary>
     internal abstract class JoinIterator<TOuterKey, TOuter, TInnerKey, TInner, TJoinKey, TResultKey, TResult> : IAsyncEnumerator<ResourceEvent<TResultKey, TResult>>
     {
@@ -17,6 +18,7 @@ namespace System.Linq
         private readonly Dictionary<TResultKey, TResult> _sent = new Dictionary<TResultKey, TResult>();
         private readonly HashQueue<TResultKey> _dirty = new HashQueue<TResultKey>();
         private readonly HashSet<TResultKey> _computed = new HashSet<TResultKey>();
+        private readonly HashSet<TResultKey> _triggered = new HashSet<TResultKey>(); // dirty keys at least one non-quiet change affects
         private Queue<ResourceEvent<TResultKey, TResult>> _reset;
         private bool _initialized;
 
@@ -100,23 +102,25 @@ namespace System.Linq
                 if (outerMove != null && outerMove.IsCompleted)
                 {
                     foreach (var change in Outer.TakeCompleted())
-                        MarkDirty(AffectedByOuter(change.Key, change.OldKeys, change.NewKeys), change.Computed);
+                        MarkDirty(AffectedByOuter(change.Key, change.OldKeys, change.NewKeys), change.Computed, change.Quiet);
                 }
                 else
                 {
                     foreach (var change in Inner.TakeCompleted())
-                        MarkDirty(AffectedByInner(change.Key, change.OldKeys, change.NewKeys), change.Computed);
+                        MarkDirty(AffectedByInner(change.Key, change.OldKeys, change.NewKeys), change.Computed, change.Quiet);
                 }
             }
         }
 
-        private void MarkDirty(IEnumerable<TResultKey> keys, bool computed)
+        private void MarkDirty(IEnumerable<TResultKey> keys, bool computed, bool quiet)
         {
             if (!_initialized)
                 return; // the initial reset computes everything
             foreach (var key in keys)
             {
                 _dirty.Enqueue(key);
+                if (!quiet)
+                    _triggered.Add(key);
                 if (computed)
                     _computed.Add(key);
                 else
@@ -144,6 +148,7 @@ namespace System.Linq
         private bool TryEmit(TResultKey key)
         {
             var computed = _computed.Remove(key) ? EventTypeFlags.Computed : 0;
+            var quiet = _triggered.Remove(key) ? 0 : EventTypeFlags.Quiet;
             var had = _sent.TryGetValue(key, out var previous);
             if (!TryCompute(key, out var result))
             {
@@ -159,7 +164,7 @@ namespace System.Linq
                 return false;
             _sent[key] = result;
             OnSent(key, true);
-            Current = new ResourceEvent<TResultKey, TResult>((had ? EventTypeFlags.Modify : EventTypeFlags.Add) | computed, key, result);
+            Current = new ResourceEvent<TResultKey, TResult>((had ? EventTypeFlags.Modify | quiet : EventTypeFlags.Add) | computed, key, result);
             return true;
         }
 

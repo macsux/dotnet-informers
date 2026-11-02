@@ -2,7 +2,10 @@
   <ItemGroup>
     <!-- libraries -->
     <PackageVersion Include="KubernetesClient" Version="21.0.8" />
+    <!-- build-time CRD generation only (src/Crds runs in its own process); never referenced by the runtime packages -->
+    <PackageVersion Include="KubeOps.Transpiler" Version="13.3.5" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.13" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
     <PackageVersion Include="System.Interactive.Async" Version="7.0.1" />
     <!-- samples -->
@@ -10,6 +13,7 @@
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.13" />
     <!-- tests -->
     <PackageVersion Include="AwesomeAssertions" Version="9.6.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.13" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.13" />
     <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.12.0" />
     <PackageVersion Include="Nito.AsyncEx" Version="5.1.2" />

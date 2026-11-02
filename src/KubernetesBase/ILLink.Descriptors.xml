@@ -1,0 +1,10 @@
+<linker>
+  <!--
+    KubernetesClient parses kubeconfig files with reflection-based YAML (KubernetesClientConfiguration.BuildConfigFromConfigFile). Keeping its
+    kubeconfig model types makes that work in trimmed apps. (It still fails under NativeAOT, inside KubernetesClient: use the in-cluster
+    configuration or set KubernetesClientConfiguration properties there.)
+  -->
+  <assembly fullname="KubernetesClient">
+    <namespace fullname="k8s.KubeConfigModels" preserve="all" />
+  </assembly>
+</linker>

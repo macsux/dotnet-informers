@@ -15,7 +15,8 @@ namespace Steeltoe.Informers.KubernetesCore
             services.AddSingleton(_ => configProvider());
             services.AddSingleton<k8s.Kubernetes>(container => new k8s.Kubernetes(container.GetRequiredService<KubernetesClientConfiguration>()));
             services.AddSingleton<IKubernetes>(container => container.GetRequiredService<k8s.Kubernetes>());
-            services.AddSingleton<IKubernetesGenericClient>(container => new KubernetesGenericClient(container.GetRequiredService<k8s.Kubernetes>()));
+            services.AddSingleton(container => new KubernetesGenericClient(container.GetRequiredService<k8s.Kubernetes>()));
+            services.AddSingleton<IKubernetesGenericClient>(container => container.GetRequiredService<KubernetesGenericClient>());
 
             return services;
         }
@@ -27,7 +28,7 @@ namespace Steeltoe.Informers.KubernetesCore
         public static IServiceCollection AddKubernetesInformers(this IServiceCollection services)
         {
             services.TryAddSingleton<IKubernetesInformerFactory>(container => new KubernetesInformerFactory(
-                container.GetRequiredService<IKubernetesGenericClient>(),
+                (IKubernetesResourceClient)container.GetRequiredService<KubernetesGenericClient>(),
                 container.GetServices<KubernetesInformerRegistration>(),
                 container.GetService<ILoggerFactory>()));
             services.TryAddSingleton(typeof(IKubernetesInformer<>), typeof(FactoryInformer<>));

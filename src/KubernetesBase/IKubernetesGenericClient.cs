@@ -1,10 +1,10 @@
-using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using k8s;
-using k8s.Models;
 using k8s.Autorest;
+using k8s.Models;
 
 namespace Steeltoe.Informers.KubernetesBase
 {
@@ -15,191 +15,72 @@ namespace Steeltoe.Informers.KubernetesBase
         ///     Sends a list or watch request for a resource addressed by group/version/resource and returns the response once its headers
         ///     arrived, so a watch body can be streamed. Throws <see cref="HttpOperationException" /> for an unsuccessful status.
         /// </summary>
-        Task<System.Net.Http.HttpResponseMessage> SendListAsync(GroupVersionResource resource, string namespaceParameter, KubernetesListRequest request, CancellationToken cancellationToken = default);
+        Task<HttpResponseMessage> SendListAsync(GroupVersionResource resource, string namespaceParameter, KubernetesListRequest request, CancellationToken cancellationToken = default);
 
         /// <summary>Whether a resource is namespaced, from API discovery (cached).</summary>
         Task<bool> IsNamespacedAsync(GroupVersionResource resource, CancellationToken cancellationToken = default);
     }
 
-    internal interface IKubernetesGenericClient : IKubernetesResourceClient
+    /// <summary>
+    ///     A typed client for any resource: reads and writes go through the configured JSON metadata (<see cref="InformersBase.InformerJson" />),
+    ///     so it is trim- and AOT-safe. The resource of an object comes from its type's <see cref="KubernetesEntityAttribute" />, or, for
+    ///     <see cref="UntypedKubernetesObject" /> and <see cref="PartialObjectMetadata" />, from its <c>apiVersion</c> and <c>kind</c> through
+    ///     discovery. Unsuccessful responses throw <see cref="HttpOperationException" /> (see <see cref="Extensions.IsNotFound" />,
+    ///     <see cref="Extensions.IsConflict" />, <see cref="Extensions.IsAlreadyExists" />).
+    /// </summary>
+    public interface IKubernetesGenericClient
     {
-
-        Task<HttpOperationResponse<KubernetesList<T>>> ListWithHttpMessagesAsync<T>(
-            string namespaceParameter = default,
-            bool? allowWatchBookmarks = default,
-            string continueParameter = default,
-            string fieldSelector = default,
-            string labelSelector = default,
-            int? limit = default,
-            string resourceVersion = default,
-            TimeSpan? timeout = default,
-            bool? watch = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject;
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse> ListWithHttpMessagesAsync(
-            Type type,
-            string namespaceParameter = default,
-            bool? allowWatchBookmarks = default,
-            string continueParameter = default,
-            string fieldSelector = default,
-            string labelSelector = default,
-            int? limit = default,
-            string resourceVersion = default,
-            TimeSpan? timeout = default,
-            bool? watch = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<T>> ReadWithHttpMessagesAsync<T>(
-            string name,
-            string namespaceParameter = default,
-            bool? isExact = default,
-            bool? isExport = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = default,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject;
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse> ReadWithHttpMessagesAsync(
-            Type type,
-            string name,
-            string namespaceParameter = default,
-            bool? isExact = default,
-            bool? isExport = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<T>> CreateWithHttpMessagesAsync<T>(
-            T body,
-            string namespaceParameter = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = default,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject;
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse> CreateWithHttpMessagesAsync(
-            object body,
-            string namespaceParameter = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<V1Status>> DeleteWithHttpMessagesAsync<TResource>(
-            TResource resource,
-            V1DeleteOptions body = default,
-            DryRun? dryRun = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where TResource : IKubernetesObject<V1ObjectMeta>;
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<V1Status>> DeleteWithHttpMessagesAsync<TResource>(
-            string name = default,
-            string namespaceParameter = default,
-            V1DeleteOptions body = default,
-            DryRun? dryRun = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where TResource : IKubernetesObject;
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<V1Status>> DeleteWithHttpMessagesAsync(
-            Type type,
-            string name = default,
-            string namespaceParameter = default,
-            V1DeleteOptions body = default,
-            DryRun? dryRun = default,
-            TimeSpan? gracePeriod = default,
-            bool? orphanDependents = default,
-            PropagationPolicy? propagationPolicy = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<T>> PatchWithHttpMessagesAsync<T>(
-            V1Patch body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? force = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
-            where T : IKubernetesObject;
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse> PatchWithHttpMessagesAsync(
-            Type type,
-            V1Patch body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? force = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
-
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<T>> ReplaceWithHttpMessagesAsync<T>(
-            T body,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default)
+        /// <summary>Reads an object; <see langword="null" /> when it doesn't exist.</summary>
+        Task<T> GetAsync<T>(string name, string @namespace = null, CancellationToken cancellationToken = default)
             where T : IKubernetesObject<V1ObjectMeta>;
 
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse<T>> ReplaceWithHttpMessagesAsync<T>(
-            T body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
+        /// <summary>Lists objects (every page), optionally filtered by label and field selectors.</summary>
+        Task<IReadOnlyList<T>> ListAsync<T>(string @namespace = null, string labelSelector = null, string fieldSelector = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>;
 
-        /// <inheritdoc cref="IKubernetes" />
-        Task<HttpOperationResponse> ReplaceWithHttpMessagesAsync(
-            object body,
-            string name,
-            string namespaceParameter = default,
-            bool? statusOnly = default,
-            DryRun? dryRun = default,
-            string fieldManager = default,
-            bool? isPretty = default,
-            Dictionary<string, List<string>> customHeaders = null,
-            CancellationToken cancellationToken = default);
+        /// <summary>Creates an object and returns it as stored.</summary>
+        Task<T> CreateAsync<T>(T obj, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>;
+
+        /// <summary>Replaces an object (or its <c>/status</c> subresource), guarded by the <c>resourceVersion</c> it carries.</summary>
+        Task<T> ReplaceAsync<T>(T obj, bool status = false, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>;
+
+        /// <summary>Sends a patch to the object's resource (or its <c>/status</c> subresource) and returns the patched object.</summary>
+        Task<T> PatchAsync<T>(T obj, V1Patch patch, bool status = false, KubernetesWriteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>;
+
+        /// <summary>
+        ///     Declares the full desired state of an object with server-side apply, owned by <paramref name="fieldManager" />: creates it or
+        ///     updates the fields this manager owns.
+        /// </summary>
+        Task<T> ApplyAsync<T>(T desired, string fieldManager, bool force = false, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>;
+
+        /// <summary>
+        ///     Deletes an object. When the object carries a UID it's sent as a precondition, so a recreated object of the same name isn't deleted.
+        ///     Returns false when it was already gone.
+        /// </summary>
+        Task<bool> DeleteAsync<T>(T obj, V1DeleteOptions options = null, CancellationToken cancellationToken = default)
+            where T : IKubernetesObject<V1ObjectMeta>;
+
+        /// <summary>The resource an object is served from, with its scope and subresources (from discovery, cached).</summary>
+        Task<KubernetesResourceInfo> GetResourceInfoAsync(IKubernetesObject<V1ObjectMeta> obj, CancellationToken cancellationToken = default);
+
+        /// <summary>Scope and subresources of a resource (from discovery, cached).</summary>
+        Task<KubernetesResourceInfo> GetResourceInfoAsync(GroupVersionResource resource, CancellationToken cancellationToken = default);
     }
+
+    /// <summary>Options of a write request.</summary>
+    public sealed class KubernetesWriteOptions
+    {
+        /// <summary>The field manager recorded for the write.</summary>
+        public string FieldManager { get; set; }
+
+        /// <summary>Validate and return the result without persisting it.</summary>
+        public bool DryRun { get; set; }
+    }
+
+    /// <summary>A resource as discovery describes it.</summary>
+    public sealed record KubernetesResourceInfo(GroupVersionResource Resource, string Kind, bool Namespaced, bool HasStatus, bool HasScale);
 }

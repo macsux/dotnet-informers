@@ -189,7 +189,7 @@ namespace Steeltoe.Informers.KubernetesBase
                 var type = root.GetProperty("type").GetString();
                 var obj = root.GetProperty("object");
                 if (type == "ERROR")
-                    throw new KubernetesException(KubernetesJson.Deserialize<V1Status>(obj.GetRawText()));
+                    throw new KubernetesException(InformerJson.Deserialize<V1Status>(obj));
                 var version = obj.TryGetProperty("metadata", out var metadata) && metadata.TryGetProperty("resourceVersion", out var rv) ? rv.GetString() : null;
                 switch (type)
                 {
